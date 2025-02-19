@@ -2,8 +2,8 @@ import { createCustomRules } from './rules.js';
 import { PrimeMolecule } from './molecule.js';
 
 /**
- * Helper class to manage molecule serialization/deserialization
- * Handles proper property access with respect to getters/setters
+ * Aggiornamento della classe MoleculeSerializer per gestire le proprietà
+ * delle reazioni di fissione, scissione ed emissione
  */
 class MoleculeSerializer {
     /**
@@ -29,11 +29,17 @@ class MoleculeSerializer {
         ...(molecule.angularVelocity ? {angularVelocity: [...molecule.angularVelocity]} : {}),
         ...(molecule.lastReactionTime ? {lastReactionTime: molecule.lastReactionTime} : {}),
         
+        // Proprietà di relazione (parentela tra molecole)
+        ...(molecule.parentIds ? {parentIds: [...molecule.parentIds]} : {}),
+        ...(molecule.reactionType ? {reactionType: molecule.reactionType} : {}),
+        
         // Quantum field properties if present
         ...(molecule._isQuantumField ? {
           _isQuantumField: true,
           _creationTime: molecule._creationTime,
-          _lifetime: molecule._lifetime
+          _lifetime: molecule._lifetime,
+          _fieldType: molecule._fieldType || 'standard',
+          _fieldStrength: molecule._fieldStrength || 1.0
         } : {})
       };
     }
@@ -66,11 +72,22 @@ class MoleculeSerializer {
         mol.lastReactionTime = molData.lastReactionTime;
       }
       
+      // Imposta proprietà di relazione
+      if (molData.parentIds && Array.isArray(molData.parentIds)) {
+        mol.parentIds = [...molData.parentIds];
+      }
+      
+      if (molData.reactionType) {
+        mol.reactionType = molData.reactionType;
+      }
+      
       // Set quantum field properties if present
       if (molData._isQuantumField) {
         mol._isQuantumField = true;
         mol._creationTime = molData._creationTime;
         mol._lifetime = molData._lifetime;
+        mol._fieldType = molData._fieldType || 'standard';
+        mol._fieldStrength = molData._fieldStrength || 1.0;
       }
       
       return mol;
@@ -86,7 +103,16 @@ class MoleculeSerializer {
         position: [...molecule.position],
         velocity: [...molecule.velocity],
         ...(molecule.angularVelocity ? {angularVelocity: [...molecule.angularVelocity]} : {}),
-        ...(molecule.lastReactionTime ? {lastReactionTime: molecule.lastReactionTime} : {})
+        ...(molecule.lastReactionTime ? {lastReactionTime: molecule.lastReactionTime} : {}),
+        ...(molecule.parentIds ? {parentIds: [...molecule.parentIds]} : {}),
+        ...(molecule.reactionType ? {reactionType: molecule.reactionType} : {}),
+        ...(molecule._isQuantumField ? {
+          _isQuantumField: true,
+          _creationTime: molecule._creationTime,
+          _lifetime: molecule._lifetime,
+          _fieldType: molecule._fieldType,
+          _fieldStrength: molecule._fieldStrength
+        } : {})
       };
     }
     
@@ -113,6 +139,24 @@ class MoleculeSerializer {
       // Update lastReactionTime if provided
       if (typeof updateData.lastReactionTime === 'number') {
         molecule.lastReactionTime = updateData.lastReactionTime;
+      }
+      
+      // Aggiorna proprietà di relazione
+      if (updateData.parentIds && Array.isArray(updateData.parentIds)) {
+        molecule.parentIds = [...updateData.parentIds];
+      }
+      
+      if (updateData.reactionType) {
+        molecule.reactionType = updateData.reactionType;
+      }
+      
+      // Update quantum field properties
+      if (updateData._isQuantumField) {
+        molecule._isQuantumField = true;
+        molecule._creationTime = updateData._creationTime;
+        molecule._lifetime = updateData._lifetime;
+        molecule._fieldType = updateData._fieldType || molecule._fieldType || 'standard';
+        molecule._fieldStrength = updateData._fieldStrength || molecule._fieldStrength || 1.0;
       }
       
       return molecule;
@@ -815,18 +859,52 @@ shouldReact(mol1, mol2) {
     return Math.random() < baseReactionProb * sizeFactor;
 }
 
+// Migliora la funzione processReaction nella classe EnhancedChemistry
 processReaction(mol1, mol2) {
     // Look for applicable reaction rules
     for (const rule of this.rules.reaction_rules) {
         // Pass molecules to condition function
         if (rule.condition(mol1.prime_factors, mol2.prime_factors, mol1, mol2)) {
             if (Math.random() < rule.probability * this.temperature) {
-                // Apply reaction rule
-                const products = rule.effect(mol1, mol2);
+                // Determina il tipo di reazione in base alle proprietà delle molecole
+                const reactionType = this.determineReactionType(mol1, mol2);
+                let products = [];
+                
+                switch(reactionType) {
+                    case 'fusion':
+                        // Fusione: crea una molecola combinata
+                        products = this.handleFusion(mol1, mol2, rule);
+                        break;
+                    case 'fission':
+                        // Fissione: divide in molecole più piccole
+                        products = this.handleFission(mol1, mol2, rule);
+                        break;
+                    case 'emission':
+                        // Emissione: mantiene molecole originali ma emette una particella
+                        products = this.handleEmission(mol1, mol2, rule);
+                        break;
+                    case 'standard':
+                    default:
+                        // Reazione standard come definita nella regola
+                        products = rule.effect(mol1, mol2);
+                }
                 
                 // Set reaction time for visual effect
                 const now = performance.now();
-                products.forEach(p => p.setReactionTime(now));
+                products.forEach(p => {
+                    p.setReactionTime(now);
+                    
+                    // Imposta le relazioni di parentela se necessario
+                    if (this.rules.establishRelationship) {
+                        this.rules.establishRelationship(mol1.id, p.id, 'parent', now);
+                        this.rules.establishRelationship(mol2.id, p.id, 'parent', now);
+                    }
+                });
+                
+                // Crea campo quantico per reazioni energetiche se necessario
+                if (reactionType === 'fission' || products.length > 2) {
+                    this.createQuantumField(mol1, mol2, products);
+                }
                 
                 return products;
             }
@@ -834,6 +912,236 @@ processReaction(mol1, mol2) {
     }
     
     return [];
+}
+
+determineReactionType(mol1, mol2) {
+    // Determina il tipo di reazione in base alle proprietà delle molecole
+    const totalMass = mol1.mass + mol2.mass;
+    const relativeSpeed = Math.sqrt(
+        Math.pow(mol1.velocity[0] - mol2.velocity[0], 2) +
+        Math.pow(mol1.velocity[1] - mol2.velocity[1], 2) +
+        Math.pow(mol1.velocity[2] - mol2.velocity[2], 2)
+    );
+    
+    // Determina il tipo di reazione in base a massa, carica e velocità
+    if (totalMass > 30 && relativeSpeed > 0.5) {
+        return 'fission'; // Scissione per molecole grandi ad alta energia
+    } else if (mol1.charge * mol2.charge < 0 && Math.abs(mol1.charge) + Math.abs(mol2.charge) > 3) {
+        return 'emission'; // Emissione quando cariche opposte forti interagiscono
+    } else if (mol1.number <= 10 && mol2.number <= 10 && this.temperature > 1.2) {
+        return 'fusion'; // Fusione più probabile per numeri piccoli ad alta temperatura
+    } else {
+        return 'standard'; // Reazione standard in altri casi
+    }
+}
+
+handleFusion(mol1, mol2, rule) {
+    // Combina le molecole in una più grande
+    const midpoint = [
+        (mol1.position[0] + mol2.position[0]) / 2,
+        (mol1.position[1] + mol2.position[1]) / 2,
+        (mol1.position[2] + mol2.position[2]) / 2
+    ];
+    
+    // Combina le velocità proporzionalmente alla massa
+    const totalMass = mol1.mass + mol2.mass;
+    const combinedVelocity = [
+        (mol1.velocity[0] * mol1.mass + mol2.velocity[0] * mol2.mass) / totalMass,
+        (mol1.velocity[1] * mol1.mass + mol2.velocity[1] * mol2.mass) / totalMass,
+        (mol1.velocity[2] * mol1.mass + mol2.velocity[2] * mol2.mass) / totalMass
+    ];
+    
+    // Usa la regola per determinare il numero della nuova molecola
+    let products;
+    if (rule.effect) {
+        products = rule.effect(mol1, mol2);
+    } else {
+        // Fallback: crea una molecola con il prodotto dei numeri
+        const fusedNumber = mol1.number * mol2.number;
+        const fusedMolecule = new PrimeMolecule(
+            Math.min(fusedNumber, this.maxNumber),
+            midpoint
+        );
+        fusedMolecule.velocity = combinedVelocity;
+        products = [fusedMolecule];
+    }
+    
+    return products;
+}
+
+handleFission(mol1, mol2, rule) {
+    // Divide le molecole in frammenti più piccoli
+    const midpoint = [
+        (mol1.position[0] + mol2.position[0]) / 2,
+        (mol1.position[1] + mol2.position[1]) / 2,
+        (mol1.position[2] + mol2.position[2]) / 2
+    ];
+    
+    // Se abbiamo una regola di effetto, usala
+    if (rule.effect) {
+        const baseProducts = rule.effect(mol1, mol2);
+        if (baseProducts.length > 0) return baseProducts;
+    }
+    
+    // Altrimenti crea una fissione basata sui fattori primi
+    const products = [];
+    const factorsMol1 = Object.entries(mol1.prime_factors);
+    const factorsMol2 = Object.entries(mol2.prime_factors);
+    
+    // Crea frammenti dai fattori primi di mol1
+    for (const [prime, exponent] of factorsMol1) {
+        if (exponent > 0) {
+            const fragmentNumber = parseInt(prime);
+            const fragmentMol = new PrimeMolecule(fragmentNumber, [...midpoint]);
+            
+            // Aggiungi velocità casuale in direzione opposta al centro
+            const direction = [
+                Math.random() - 0.5,
+                Math.random() - 0.5,
+                Math.random() - 0.5
+            ];
+            const norm = Math.sqrt(direction[0]**2 + direction[1]**2 + direction[2]**2);
+            fragmentMol.velocity = [
+                direction[0]/norm * 0.5 * this.temperature,
+                direction[1]/norm * 0.5 * this.temperature,
+                direction[2]/norm * 0.5 * this.temperature
+            ];
+            
+            products.push(fragmentMol);
+        }
+    }
+    
+    // Crea frammenti dai fattori primi di mol2
+    for (const [prime, exponent] of factorsMol2) {
+        if (exponent > 0) {
+            const fragmentNumber = parseInt(prime);
+            const fragmentMol = new PrimeMolecule(fragmentNumber, [...midpoint]);
+            
+            // Aggiungi velocità casuale in direzione opposta al centro
+            const direction = [
+                Math.random() - 0.5,
+                Math.random() - 0.5,
+                Math.random() - 0.5
+            ];
+            const norm = Math.sqrt(direction[0]**2 + direction[1]**2 + direction[2]**2);
+            fragmentMol.velocity = [
+                direction[0]/norm * 0.5 * this.temperature,
+                direction[1]/norm * 0.5 * this.temperature,
+                direction[2]/norm * 0.5 * this.temperature
+            ];
+            
+            products.push(fragmentMol);
+        }
+    }
+    
+    // Limita il numero di prodotti se necessario
+    if (products.length > 5) {
+        return products.slice(0, 5);
+    }
+    
+    return products.length > 0 ? products : rule.effect(mol1, mol2);
+}
+
+handleEmission(mol1, mol2, rule) {
+    // Emette una particella ma mantiene le molecole originali modificate
+    const products = [];
+    
+    // Posizione di emissione (media delle posizioni)
+    const emissionPoint = [
+        (mol1.position[0] + mol2.position[0]) / 2,
+        (mol1.position[1] + mol2.position[1]) / 2,
+        (mol1.position[2] + mol2.position[2]) / 2
+    ];
+    
+    // Se la regola fornisce un effetto, usalo come base
+    if (rule.effect) {
+        products.push(...rule.effect(mol1, mol2));
+    }
+    
+    // Se non abbiamo prodotti dalla regola, creiamo versioni modificate delle molecole originali
+    if (products.length === 0) {
+        // Scegli la molecola più piccola per modificarla
+        const smallerMol = mol1.number <= mol2.number ? mol1 : mol2;
+        const largerMol = mol1.number > mol2.number ? mol1 : mol2;
+        
+        // Crea copie modificate delle molecole originali
+        const modifiedSmaller = new PrimeMolecule(
+            Math.max(2, smallerMol.number - 1),
+            [...smallerMol.position]
+        );
+        modifiedSmaller.velocity = [...smallerMol.velocity];
+        
+        const modifiedLarger = new PrimeMolecule(
+            Math.max(2, largerMol.number - 1),
+            [...largerMol.position]
+        );
+        modifiedLarger.velocity = [...largerMol.velocity];
+        
+        products.push(modifiedSmaller, modifiedLarger);
+    }
+    
+    // Aggiungi una particella emessa (numero primo piccolo)
+    const emittedParticle = new PrimeMolecule(
+        this.getSmallPrimeNumber(),
+        [...emissionPoint]
+    );
+    
+    // Imposta velocità di emissione in direzione casuale
+    const emissionDirection = [
+        Math.random() - 0.5,
+        Math.random() - 0.5,
+        Math.random() - 0.5
+    ];
+    const norm = Math.sqrt(
+        emissionDirection[0]**2 + 
+        emissionDirection[1]**2 + 
+        emissionDirection[2]**2
+    );
+    
+    const emissionSpeed = 0.8 * this.temperature;
+    emittedParticle.velocity = [
+        emissionDirection[0]/norm * emissionSpeed,
+        emissionDirection[1]/norm * emissionSpeed,
+        emissionDirection[2]/norm * emissionSpeed
+    ];
+    
+    // Imposta proprietà speciali per la particella emessa
+    emittedParticle._isQuantumField = true;
+    emittedParticle._creationTime = performance.now();
+    emittedParticle._lifetime = 3000 + Math.random() * 2000; // 3-5 secondi
+    
+    products.push(emittedParticle);
+    
+    return products;
+}
+
+getSmallPrimeNumber() {
+    // Restituisce un numero primo casuale piccolo per particelle emesse
+    const smallPrimes = [2, 3, 5, 7, 11, 13];
+    return smallPrimes[Math.floor(Math.random() * smallPrimes.length)];
+}
+
+createQuantumField(mol1, mol2, products) {
+    // Crea un campo quantico temporaneo che influenza le molecole circostanti
+    const reactionCenter = [
+        (mol1.position[0] + mol2.position[0]) / 2,
+        (mol1.position[1] + mol2.position[1]) / 2,
+        (mol1.position[2] + mol2.position[2]) / 2
+    ];
+    
+    // Crea una molecola speciale che rappresenta un campo quantico
+    const field = new PrimeMolecule(1, [...reactionCenter]);
+    field._isQuantumField = true;
+    field._creationTime = performance.now();
+    field._lifetime = 1500 + Math.random() * 1000; // 1.5-2.5 secondi di vita
+    field.velocity = [0, 0, 0]; // Campo stazionario
+    
+    // Imposta colore e proprietà speciali
+    field.color = [0.2, 0.8, 1];
+    
+    // Aggiungi il campo alla lista delle molecole
+    field.id = `field-${this.nextMoleculeId++}`;
+    this.molecules.push(field);
 }
 
 enforceBoundaries(molecule) {
@@ -1126,65 +1434,160 @@ clear() {
 /**
 * Quantum fields update function
 */
+/**
+ * Funzione migliorata per aggiornare i campi quantici,
+ * supportando effetti specifici per fissione, scissione ed emissione
+ */
 function updateQuantumFields(simulation) {
-const now = performance.now();
+    const now = performance.now();
 
-// Filter quantum field molecules
-const quantumFields = simulation.molecules.filter(mol => mol._isQuantumField);
-const fieldsToRemove = [];
+    // Filter quantum field molecules
+    const quantumFields = simulation.molecules.filter(mol => mol._isQuantumField);
+    const fieldsToRemove = [];
 
-for (const field of quantumFields) {
-    // Check if field has expired
-    if (now - field._creationTime > field._lifetime) {
-        fieldsToRemove.push(field);
-        continue;
-    }
-    
-    // Calculate field effect on other molecules
-    for (const mol of simulation.molecules) {
-        // Skip the field itself and other fields
-        if (mol._isQuantumField || mol === field) continue;
+    for (const field of quantumFields) {
+        // Check if field has expired
+        if (now - field._creationTime > field._lifetime) {
+            fieldsToRemove.push(field);
+            continue;
+        }
         
-        // Calculate distance from field
-        const distance = simulation.calculateDistance(field, mol);
+        // Determine field type and strength
+        const fieldType = field._fieldType || 'standard';
+        const fieldStrength = field._fieldStrength || 1.0;
         
-        // Field only affects molecules within certain radius
-        if (distance < 5.0) {
-            // Calculate direction from field to molecule
-            const direction = [
-                mol.position[0] - field.position[0],
-                mol.position[1] - field.position[1],
-                mol.position[2] - field.position[2]
-            ];
+        // Calculate field effect on other molecules
+        for (const mol of simulation.molecules) {
+            // Skip the field itself and other fields
+            if (mol._isQuantumField || mol === field) continue;
             
-            // Normalize direction
-            const dirNorm = Math.sqrt(
-                direction[0]**2 + 
-                direction[1]**2 + 
-                direction[2]**2
-            );
+            // Calculate distance from field
+            const distance = simulation.calculateDistance(field, mol);
+            const fieldRadius = fieldType === 'fission' ? 8.0 : 5.0;
             
-            if (dirNorm > 0.001) {
-                const normalizedDir = direction.map(d => d / dirNorm);
+            // Field only affects molecules within certain radius
+            if (distance < fieldRadius) {
+                // Calculate force direction (from field to molecule)
+                const direction = [
+                    mol.position[0] - field.position[0],
+                    mol.position[1] - field.position[1],
+                    mol.position[2] - field.position[2]
+                ];
                 
-                // Calculate oscillatory effect
-                const oscillation = Math.sin((now - field._creationTime) / 200);
-                const fieldStrength = 0.02 * (1 - distance/5.0) * oscillation;
+                // Normalize direction
+                const dirNorm = Math.sqrt(
+                    direction[0]**2 + 
+                    direction[1]**2 + 
+                    direction[2]**2
+                );
                 
-                // Apply oscillatory force to molecule
-                for (let i = 0; i < 3; i++) {
-                    mol.velocity[i] += normalizedDir[i] * fieldStrength;
+                if (dirNorm > 0.001) {
+                    const normalizedDir = direction.map(d => d / dirNorm);
+                    
+                    // Effetti differenziati in base al tipo di campo
+                    switch(fieldType) {
+                        case 'fission':
+                            // Campo di fissione: forza repulsiva pulsante
+                            const fissionPulse = Math.sin((now - field._creationTime) / 100) * 0.5 + 0.5;
+                            const fissionStrength = 0.05 * fieldStrength * fissionPulse * (1 - distance/fieldRadius);
+                            
+                            // Applica forza repulsiva
+                            for (let i = 0; i < 3; i++) {
+                                mol.velocity[i] += normalizedDir[i] * fissionStrength;
+                            }
+                            
+                            // Occasionalmente causa rotazione
+                            if (Math.random() < 0.05 && mol.angularVelocity) {
+                                mol.angularVelocity = mol.angularVelocity.map(v => v + (Math.random() - 0.5) * 0.1);
+                            }
+                            break;
+                            
+                        case 'emission':
+                            // Campo di emissione: oscillazione perpendicolare
+                            const emissionFreq = (now - field._creationTime) / 150;
+                            const emissionWave = Math.sin(emissionFreq) * Math.cos(emissionFreq * 0.7);
+                            const emissionStrength = 0.03 * fieldStrength * (1 - distance/fieldRadius);
+                            
+                            // Crea un vettore perpendicolare alla direzione
+                            const perpVector = [
+                                normalizedDir[1] - normalizedDir[2],
+                                normalizedDir[2] - normalizedDir[0],
+                                normalizedDir[0] - normalizedDir[1]
+                            ];
+                            
+                            // Normalizza il vettore perpendicolare
+                            const perpNorm = Math.sqrt(
+                                perpVector[0]**2 + 
+                                perpVector[1]**2 + 
+                                perpVector[2]**2
+                            );
+                            
+                            if (perpNorm > 0.001) {
+                                // Applica forza oscillante perpendicolare
+                                for (let i = 0; i < 3; i++) {
+                                    mol.velocity[i] += (perpVector[i] / perpNorm) * emissionWave * emissionStrength;
+                                }
+                            }
+                            break;
+                            
+                        case 'standard':
+                        default:
+                            // Campo standard: oscillazione radiale
+                            const oscillation = Math.sin((now - field._creationTime) / 200);
+                            const fieldEffect = 0.02 * fieldStrength * (1 - distance/fieldRadius) * oscillation;
+                            
+                            // Applica forza oscillatoria radiale
+                            for (let i = 0; i < 3; i++) {
+                                mol.velocity[i] += normalizedDir[i] * fieldEffect;
+                            }
+                    }
+                    
+                    // Effetto visivo: le molecole nei campi quantici possono cambiare colore temporaneamente
+                    if (Math.random() < 0.02 && distance < fieldRadius * 0.5) {
+                        // Leggero shift del colore verso il colore del campo
+                        for (let i = 0; i < 3; i++) {
+                            mol.color[i] = mol.color[i] * 0.95 + field.color[i] * 0.05;
+                        }
+                    }
                 }
             }
         }
+        
+        // Aggiorna il campo stesso
+        if (fieldType === 'fission') {
+            // I campi di fissione si espandono gradualmente
+            const expansionFactor = 1.0 + (now - field._creationTime) / field._lifetime * 0.5;
+            field._fieldStrength = fieldStrength * (1.0 - (now - field._creationTime) / field._lifetime);
+        } else if (fieldType === 'emission') {
+            // I campi di emissione pulsano
+            field._fieldStrength = fieldStrength * (0.5 + 0.5 * Math.sin((now - field._creationTime) / 300));
+        }
     }
-}
 
-// Remove expired fields
-if (fieldsToRemove.length > 0) {
-    simulation.molecules = simulation.molecules.filter(
-        mol => !fieldsToRemove.includes(mol));
-}
+    // Remove expired fields
+    if (fieldsToRemove.length > 0) {
+        simulation.molecules = simulation.molecules.filter(
+            mol => !fieldsToRemove.includes(mol));
+            
+        // Se un campo scompare, a volte può lasciare una particella residua
+        for (const field of fieldsToRemove) {
+            if (Math.random() < 0.3) {
+                const residue = new PrimeMolecule(
+                    Math.max(2, Math.floor(Math.random() * 5)),
+                    [...field.position]
+                );
+                
+                residue.id = `residue-${simulation.nextMoleculeId++}`;
+                residue.velocity = [
+                    (Math.random() - 0.5) * 0.2,
+                    (Math.random() - 0.5) * 0.2,
+                    (Math.random() - 0.5) * 0.2
+                ];
+                
+                simulation.molecules.push(residue);
+            }
+        }
+    }
 }
 
 // Main worker code

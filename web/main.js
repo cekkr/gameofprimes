@@ -91,7 +91,7 @@ function handleWorkerMessage(event) {
         console.log('Pulizia worker completata');
     } else if (event.data.type === 'error') {
         console.error('Errore nel worker:', event.data.message);
-        displayErrorMessage(event.data.message);
+        //displayErrorMessage(event.data.message);
     }
 }
 
@@ -274,7 +274,7 @@ function updateInfoDisplay() {
         <p>Reazioni: <strong>${simulationData.reactionCount || 0}</strong></p>
         <p>Stato: <strong>${paused ? 'PAUSA' : 'ATTIVO'}</strong></p>
       </div>
-      
+
       <div class="controls-info">
         <p>Spazio: Pausa | A: Auto | V: Vettori</p>
         <p>Click: Seleziona molecola</p>
@@ -437,7 +437,6 @@ function init() {
     // Inizializza simulazione migliorata
     initializeEnhancedSimulation(spaceDimension);
 
-
     // Scene setup
     scene = new THREE.Scene();
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -591,7 +590,7 @@ function animate(timestamp) {
 let init_done = false;
 
 // MODIFICARE: Sovrascrivere initializeEnhancedSimulation
-function initializeEnhancedSimulation(size = 10, molecolePerUnit = 10, maxNumber = 200, timeScale = 0.2) {
+function initializeEnhancedSimulation(size = 10, molecolePerUnit = 20, maxNumber = 200, timeScale = 1.0) {
     console.log("Inizializzazione simulazione avanzata...");
 
     // Termina worker esistente se presente
@@ -2655,7 +2654,9 @@ function ensureGlobalVariables() {
 function fixedAnimate(timestamp) {
     // Garantisci che le variabili siano accessibili
     ensureGlobalVariables();
-    
+    updateInfoDisplay();
+    controls.update();
+
     // Delta time per animazioni fluide
     const deltaTime = window.lastFrameTime ? timestamp - window.lastFrameTime : 16.6;
     window.lastFrameTime = timestamp;
@@ -2671,11 +2672,6 @@ function fixedAnimate(timestamp) {
                 type: 'step'
             });
         }
-    }
-
-    // Aggiorna la UI
-    if (typeof updateInfoDisplay === 'function') {
-        updateInfoDisplay();
     }
 
     // Rendering
