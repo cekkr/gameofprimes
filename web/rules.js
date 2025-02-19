@@ -30,18 +30,18 @@ class SimulationRules {
         this.reaction_rules = [];
         this.constants = {
             'G': 0.05,           // Costante gravitazionale (ridotta per renderla più debole)
-            'k': 1.0,            // Costante elettrostatica
-            'min_distance': 0.5, // Distanza minima per evitare singolarità
-            'max_force': 10.0,   // Forza massima applicabile
-            'damping': 0.95,     // Smorzamento
+            'k': 0.5,            // Costante elettrostatica
+            'min_distance': 0.1, // Distanza minima per evitare singolarità
+            'max_force': 1000.0,   // Forza massima applicabile
+            'damping': 0.5,     // Smorzamento
             'temperature_factor': 1.0,
             'quantum_strength': 0.2,
             'time_scale': 0.8,   // Rallentato per gravità più graduale
             'repulsion_decay_time': 2000, // Tempo in ms per cui le particelle restano ripulsive
             'cooling_period': 500, // Tempo in ms durante il quale le molecole non reagiscono dopo una reazione
             'entropy_factor': 0.3, // Fattore di entropia per prevenire il collasso gravitazionale
-            'family_repulsion': 1.5, // Intensità della repulsione tra "parenti"
-            'random_interaction_probability': 0.05 // Probabilità di considerare molecole casuali nel caching
+            'family_repulsion': 1.0, // Intensità della repulsione tra "parenti"
+            'random_interaction_probability': 0.1 // Probabilità di considerare molecole casuali nel caching
         };
         
         // Registro di relazioni parentali: mantiene traccia di quali molecole sono "parenti"
@@ -219,7 +219,7 @@ function createCustomRules() {
     }
     
     rules.addInteractionRule(
-        new InteractionRule("Charge Repulsion", 1.5, chargeRepulsionCondition, chargeRepulsionForce, 0.3,
+        new InteractionRule("Charge Repulsion", 0.5, chargeRepulsionCondition, chargeRepulsionForce, 0.3,
         "Repulsione tra molecole con cariche dello stesso segno")
     );
 
@@ -240,7 +240,7 @@ function createCustomRules() {
     }
     
     rules.addInteractionRule(
-        new InteractionRule("Charge Attraction", 1.5, chargeAttractionCondition, chargeAttractionForce, 0.25,
+        new InteractionRule("Charge Attraction", 1.0, chargeAttractionCondition, chargeAttractionForce, 0.25,
         "Attrazione tra molecole con cariche di segno opposto")
     );
 

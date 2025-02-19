@@ -2264,6 +2264,7 @@ let workerId = 'main';
 /**
  * MoleculeInteractionManager - gestisce efficientemente le interazioni tra molecole
  * Implementa un sistema di calcolo non ridondante e ottimizzato per la parallelizzazione
+ * Con miglioramenti per mantenere consistente l'allocazione delle molecole ai worker
  */
 class MoleculeInteractionManager {
     constructor() {
@@ -2279,6 +2280,15 @@ class MoleculeInteractionManager {
             totalCalculations: 0,
             cacheHits: 0
         };
+        
+        // Sistema di allocazione persistente delle molecole
+        this.moleculeWorkerAssignments = new Map(); // Mappa moleculeId -> workerId
+        this.workerMoleculeGroups = new Map();      // Mappa workerId -> Set di moleculeId
+        this.lastSeenMolecules = new Set();         // Molecole nell'ultima esecuzione
+        this.pairToWorkerMap = new Map();           // Mappa pairId -> workerId
+        this.workerLoad = new Map();                // Bilanciamento del carico
+
+        this.prevMolecules = [];
     }
 
     /**
@@ -2336,18 +2346,349 @@ class MoleculeInteractionManager {
     }
 
     /**
+     * Aggiorna le assegnazioni molecola-worker basandosi sulle molecole attuali
+     * Cerca di mantenere stabili le assegnazioni tra le esecuzioni
+     * @param {Array} molecules - L'array di tutte le molecole attuali
+     * @param {number} workerCount - Il numero di worker disponibili
+     */
+    updateMoleculeWorkerAssignments(molecules, workerCount, workPlan) {
+        const currentMoleculeIds = new Set(molecules.map(mol => mol.id));
+        
+        // 1. Identifica molecole nuove e rimosse
+        const newMolecules = [...currentMoleculeIds].filter(id => !this.lastSeenMolecules.has(id));
+        const removedMolecules = [...this.lastSeenMolecules].filter(id => !currentMoleculeIds.has(id));
+        
+        // 2. Rimuovi molecole non più presenti dalle assegnazioni
+        for (const molId of removedMolecules) {
+            const workerId = this.moleculeWorkerAssignments.get(molId);
+            if (workerId !== undefined) {
+                const moleculeGroup = this.workerMoleculeGroups.get(workerId);
+                if (moleculeGroup) {
+                    moleculeGroup.delete(molId);
+                }
+                this.moleculeWorkerAssignments.delete(molId);
+                
+                // Aggiorna il carico del worker
+                if (this.workerLoad.has(workerId)) {
+                    this.workerLoad.set(workerId, this.workerLoad.get(workerId) - 1);
+                }
+            }
+        }
+        
+        // Ordina il piano di lavoro: prima per workerId, poi per priorità
+        const sortedPlan = workPlan.sort((a, b) => {
+            if (a.workerId !== b.workerId) {
+                return a.workerId - b.workerId;
+            }
+            return b.priority - a.priority;
+        });
+        
+        // Raggruppa le interazioni per worker
+        const workerPartitions = new Map();
+        for (let i = 0; i < workerCount; i++) {
+            workerPartitions.set(i, []);
+        }
+        
+        sortedPlan.forEach(interaction => {
+            const targetPartition = workerPartitions.get(interaction.workerId) || workerPartitions.get(0);
+            targetPartition.push(interaction);
+        });
+        
+        // Prepara il piano di distribuzione
+        return Array.from(workerPartitions.entries()).map(([workerId, interactions]) => ({
+            workerId,
+            interactions,
+            moleculeIndices: this.getRequiredMoleculeIndices(interactions)
+        }));
+    }
+    
+    /**
+     * Esporta le statistiche di stabilità delle assegnazioni
+     * Utile per monitorare l'efficacia della persistenza
+     */
+    getAssignmentStats() {
+        return {
+            uniqueMolecules: this.moleculeWorkerAssignments.size,
+            workerGroups: Array.from(this.workerMoleculeGroups.entries()).map(([workerId, molecules]) => ({
+                workerId,
+                moleculeCount: molecules.size
+            })),
+            pairAssignments: this.pairToWorkerMap.size,
+            workerLoads: Array.from(this.workerLoad.entries())
+        };
+    }
+    
+    /**
+     * Serializza lo stato delle assegnazioni per preservarlo tra sessioni
+     * Può essere utile per sistemi che si riavviano frequentemente
+     */
+    serializeAssignmentState() {
+        return JSON.stringify({
+            moleculeWorkerAssignments: Array.from(this.moleculeWorkerAssignments.entries()),
+            pairToWorkerMap: Array.from(this.pairToWorkerMap.entries()),
+            lastSeenMolecules: Array.from(this.lastSeenMolecules)
+        });
+    }
+    
+    /**
+     * Carica lo stato delle assegnazioni da una precedente serializzazione
+     */
+    loadAssignmentState(serializedState) {
+        try {
+            const state = JSON.parse(serializedState);
+            
+            if (state.moleculeWorkerAssignments) {
+                this.moleculeWorkerAssignments = new Map(state.moleculeWorkerAssignments);
+            }
+            
+            if (state.pairToWorkerMap) {
+                this.pairToWorkerMap = new Map(state.pairToWorkerMap);
+            }
+            
+            if (state.lastSeenMolecules) {
+                this.lastSeenMolecules = new Set(state.lastSeenMolecules);
+            }
+            
+            // Ricostruisci workerMoleculeGroups dalle assegnazioni
+            this.workerMoleculeGroups.clear();
+            for (const [molId, workerId] of this.moleculeWorkerAssignments.entries()) {
+                if (!this.workerMoleculeGroups.has(workerId)) {
+                    this.workerMoleculeGroups.set(workerId, new Set());
+                }
+                this.workerMoleculeGroups.get(workerId).add(molId);
+            }
+            
+            // Aggiorna workerLoad
+            this.workerLoad.clear();
+            for (const [workerId, molecules] of this.workerMoleculeGroups.entries()) {
+                this.workerLoad.set(workerId, molecules.size);
+            }
+            
+            return true;
+        } catch (error) {
+            console.error('Errore durante il caricamento dello stato:', error);
+            return false;
+        }
+    }                
+    
+    /**
+     * Trova il worker ideale per una nuova molecola basandosi sulle interazioni 
+     * con molecole già assegnate e sul bilanciamento del carico
+     */
+    findIdealWorkerForMolecule(molId, allMolecules, workerCount) {
+        // Crea mappa molecoleId -> indice nell'array allMolecules
+        const moleculeMap = new Map();
+        allMolecules.forEach((mol, index) => moleculeMap.set(mol.id, index));
+        
+        // Conteggio affinità: per ogni worker, quante molecole già assegnate 
+        // sono vicine/interagiscono con questa nuova molecola
+        const workerAffinityScores = new Map();
+        for (let i = 0; i < workerCount; i++) {
+            workerAffinityScores.set(i, 0);
+        }
+        
+        const molIndex = moleculeMap.get(molId);
+        const molecule = allMolecules[molIndex];
+        
+        // Calcola affinità con le molecole già assegnate
+        for (const [otherMolId, workerId] of this.moleculeWorkerAssignments.entries()) {
+            if (workerId >= workerCount) continue; // Ignora worker non più disponibili
+            
+            const otherMolIndex = moleculeMap.get(otherMolId);
+            if (otherMolIndex === undefined) continue;
+            
+            const otherMol = allMolecules[otherMolIndex];
+            const affinity = this.calculateMoleculeAffinity(molecule, otherMol);
+            
+            // Incrementa il punteggio di affinità per il worker
+            const currentScore = workerAffinityScores.get(workerId) || 0;
+            workerAffinityScores.set(workerId, currentScore + affinity);
+        }
+        
+        // Combina affinità con bilanciamento del carico
+        // Favorisce worker con alta affinità e basso carico
+        let bestWorkerId = 0;
+        let bestScore = -Infinity;
+        
+        for (let i = 0; i < workerCount; i++) {
+            const affinityScore = workerAffinityScores.get(i) || 0;
+            const currentLoad = this.workerLoad.get(i) || 0;
+            
+            // Formula: affinità - (carico / fattore_normalizzazione)
+            // Più alta l'affinità e più basso il carico, migliore il punteggio
+            const balancedScore = affinityScore - (currentLoad / (allMolecules.length / workerCount));
+            
+            if (balancedScore > bestScore) {
+                bestScore = balancedScore;
+                bestWorkerId = i;
+            }
+        }
+        
+        return bestWorkerId;
+    }
+    
+    /**
+     * Calcola un punteggio di affinità tra due molecole
+     * Valori più alti indicano maggiore probabilità di interazione significativa
+     */
+    calculateMoleculeAffinity(mol1, mol2) {
+        // Verifica se questa coppia è già nella cache delle interazioni
+        const pairId = this.getPairId(mol1.id, mol2.id);
+        if (this.interactionCache.has(pairId)) {
+            return 10.0; // Alta affinità per interazioni già calcolate in passato
+        }
+        
+        // Calcola distanza approssimativa
+        const pos1 = mol1._physicsPosition || mol1.position;
+        const pos2 = mol2._physicsPosition || mol2.position;
+        
+        let distanceSquared = 0;
+        for (let i = 0; i < 3; i++) {
+            const diff = pos2[i] - pos1[i];
+            distanceSquared += diff * diff;
+        }
+        
+        // Affinità inversa alla distanza e proporzionale alle masse
+        const combinedMass = (mol1.mass || 1) + (mol2.mass || 1);
+        return combinedMass / (distanceSquared + 1);
+    }
+    
+    /**
+     * Ribilancia il carico se c'è uno sbilanciamento significativo
+     * Viene eseguito solo occasionalmente per evitare continui spostamenti
+     */
+    rebalanceWorkerLoadsIfNeeded(workerCount) {
+        // Esegui ribilanciamento solo occasionalmente (ad esempio, ogni X chiamate)
+        // o quando c'è uno sbilanciamento significativo
+        const shouldRebalance = this.detectSignificantImbalance(workerCount);
+        if (!shouldRebalance) return;
+        
+        // Trova worker più e meno caricati
+        let maxLoad = -Infinity;
+        let minLoad = Infinity;
+        let mostLoadedWorker = 0;
+        let leastLoadedWorker = 0;
+        
+        for (let i = 0; i < workerCount; i++) {
+            const load = this.workerLoad.get(i) || 0;
+            if (load > maxLoad) {
+                maxLoad = load;
+                mostLoadedWorker = i;
+            }
+            if (load < minLoad) {
+                minLoad = load;
+                leastLoadedWorker = i;
+            }
+        }
+        
+        // Se lo sbilanciamento è significativo, sposta alcune molecole
+        if (maxLoad - minLoad > 3) {
+            const overloadedWorkerMolecules = this.workerMoleculeGroups.get(mostLoadedWorker);
+            if (!overloadedWorkerMolecules || overloadedWorkerMolecules.size <= 1) return;
+            
+            // Trova le molecole con minor affinità nel gruppo più caricato
+            const moleculesToMove = this.findLeastAffineMolecules(
+                overloadedWorkerMolecules,
+                Math.floor((maxLoad - minLoad) / 2)
+            );
+            
+            // Sposta le molecole selezionate
+            this.moveMoleculesToWorker(moleculesToMove, mostLoadedWorker, leastLoadedWorker);
+        }
+    }
+    
+    /**
+     * Rileva se c'è uno sbilanciamento significativo tra i worker
+     */
+    detectSignificantImbalance(workerCount) {
+        if (workerCount <= 1) return false;
+        
+        let maxLoad = -Infinity;
+        let minLoad = Infinity;
+        let totalLoad = 0;
+        
+        for (let i = 0; i < workerCount; i++) {
+            const load = this.workerLoad.get(i) || 0;
+            maxLoad = Math.max(maxLoad, load);
+            minLoad = Math.min(minLoad, load);
+            totalLoad += load;
+        }
+        
+        const avgLoad = totalLoad / workerCount;
+        
+        // Considera sbilanciato se:
+        // 1. La differenza tra max e min è più del 50% del carico medio, e
+        // 2. La differenza assoluta è almeno 3 molecole
+        return (maxLoad - minLoad) > Math.max(avgLoad * 0.5, 3);
+    }
+    
+    /**
+     * Trova le molecole con minor affinità all'interno di un gruppo
+     */
+    findLeastAffineMolecules(moleculeGroup, count) {
+        // Implementazione semplificata: seleziona elementi casuali
+        // In una implementazione reale, calcolerebbe l'affinità tra ciascuna molecola
+        // e tutte le altre nel gruppo, selezionando quelle con affinità più bassa
+        const moleculeArray = [...moleculeGroup];
+        return moleculeArray.slice(0, Math.min(count, moleculeArray.length));
+    }
+    
+    /**
+     * Sposta molecole da un worker all'altro, aggiornando tutte le mappe pertinenti
+     */
+    moveMoleculesToWorker(moleculeIds, sourceWorkerId, targetWorkerId) {
+        const sourceGroup = this.workerMoleculeGroups.get(sourceWorkerId);
+        if (!sourceGroup) return;
+        
+        if (!this.workerMoleculeGroups.has(targetWorkerId)) {
+            this.workerMoleculeGroups.set(targetWorkerId, new Set());
+        }
+        const targetGroup = this.workerMoleculeGroups.get(targetWorkerId);
+        
+        for (const molId of moleculeIds) {
+            if (sourceGroup.has(molId)) {
+                // Aggiorna le mappe
+                sourceGroup.delete(molId);
+                targetGroup.add(molId);
+                this.moleculeWorkerAssignments.set(molId, targetWorkerId);
+                
+                // Aggiorna i conteggi del carico
+                this.workerLoad.set(sourceWorkerId, (this.workerLoad.get(sourceWorkerId) || 0) - 1);
+                this.workerLoad.set(targetWorkerId, (this.workerLoad.get(targetWorkerId) || 0) + 1);
+                
+                // Aggiorna anche le assegnazioni delle coppie
+                this.updatePairAssignmentsForMolecule(molId, targetWorkerId);
+            }
+        }
+    }
+    
+    /**
+     * Aggiorna le assegnazioni delle coppie per una molecola spostata
+     */
+    updatePairAssignmentsForMolecule(movedMolId, newWorkerId) {
+        // Trova tutte le coppie che coinvolgono questa molecola
+        for (const [pairId, workerId] of this.pairToWorkerMap.entries()) {
+            const [mol1Id, mol2Id] = pairId.split(':');
+            if (mol1Id === movedMolId || mol2Id === movedMolId) {
+                this.pairToWorkerMap.set(pairId, newWorkerId);
+            }
+        }
+    }
+
+    /**
      * Determina l'ordine ottimale di elaborazione per un gruppo di molecole
      * Costruisce una lista di coppie da elaborare evitando duplicazioni
+     * Mantiene consistente l'assegnazione a worker specifici
      */
-    buildInteractionWorkPlan(molecules) {
-        // Reset del piano di elaborazione
+    buildInteractionWorkPlan(molecules, workerCount = 1) {
+        // Reset del piano di elaborazione ma mantieni le assegnazioni
         this.resetWorkSession();
         
-        const workPlan = [];
+        let workPlan = [];        
+                
         const moleculeCount = molecules.length;
         
         // Costruisci la lista utilizzando una matrice triangolare superiore
-        // In questo modo ogni coppia viene considerata una sola volta
         for (let i = 0; i < moleculeCount; i++) {
             for (let j = i + 1; j < moleculeCount; j++) {
                 const mol1 = molecules[i];
@@ -2359,22 +2700,99 @@ class MoleculeInteractionManager {
                     continue;
                 }
                 
+                // Determina a quale worker assegnare questa interazione
+                // basandosi sulle assegnazioni esistenti delle molecole
+                const workerId = this.determineWorkerForInteraction(mol1.id, mol2.id, workerCount);
+                
                 // Aggiungi la coppia al piano di lavoro
                 workPlan.push({
                     mol1Index: i,
                     mol2Index: j,
                     mol1Id: mol1.id,
                     mol2Id: mol2.id,
-                    // Priorità basata sulla distanza se disponibile nella cache
+                    workerId: workerId,
                     priority: this.estimateInteractionPriority(mol1, mol2)
                 });
                 
                 this.stats.totalCalculations++;
             }
         }
+
+        // Aggiorna le assegnazioni molecola-worker
+        workPlan = this.updateMoleculeWorkerAssignments(molecules, workerCount, workPlan);
         
-        // Ordina il piano di lavoro in base alla priorità
-        return workPlan.sort((a, b) => b.priority - a.priority);
+        // Ordina il piano di lavoro in base alla priorità per ogni worker
+        return workPlan.sort((a, b) => {
+            // Prima ordina per workerId, poi per priorità
+            if (a.workerId !== b.workerId) {
+                return a.workerId - b.workerId;
+            }
+            return b.priority - a.priority;
+        });
+    }
+    
+    /**
+     * Determina quale worker dovrebbe gestire un'interazione specifica
+     * Cerca di mantenere consistenza con le assegnazioni precedenti
+     */
+    determineWorkerForInteraction(mol1Id, mol2Id, workerCount) {
+        const pairId = this.getPairId(mol1Id, mol2Id);
+        
+        // 1. Verifica se questa coppia ha già un'assegnazione persistente
+        if (this.pairToWorkerMap.has(pairId)) {
+            const existingWorkerId = this.pairToWorkerMap.get(pairId);
+            // Verifica che il worker esista ancora
+            if (existingWorkerId < workerCount) {
+                return existingWorkerId;
+            }
+        }
+        
+        // 2. Altrimenti, scegli in base all'appartenenza delle molecole
+        const worker1 = this.moleculeWorkerAssignments.get(mol1Id);
+        const worker2 = this.moleculeWorkerAssignments.get(mol2Id);
+        
+        // Se entrambe le molecole sono già assegnate allo stesso worker, usa quello
+        if (worker1 !== undefined && worker1 === worker2 && worker1 < workerCount) {
+            this.pairToWorkerMap.set(pairId, worker1);
+            return worker1;
+        }
+        
+        // 3. Se le molecole appartengono a worker diversi, scegli in base al carico
+        if (worker1 !== undefined && worker2 !== undefined) {
+            // Scegli il worker con carico minore
+            const load1 = this.workerLoad.get(worker1) || 0;
+            const load2 = this.workerLoad.get(worker2) || 0;
+            
+            const selectedWorker = load1 <= load2 ? worker1 : worker2;
+            this.pairToWorkerMap.set(pairId, selectedWorker);
+            return selectedWorker;
+        }
+        
+        // 4. Se almeno una molecola ha un'assegnazione, usa quella
+        if (worker1 !== undefined && worker1 < workerCount) {
+            this.pairToWorkerMap.set(pairId, worker1);
+            return worker1;
+        }
+        
+        if (worker2 !== undefined && worker2 < workerCount) {
+            this.pairToWorkerMap.set(pairId, worker2);
+            return worker2;
+        }
+        
+        // 5. Se nessuna delle due molecole ha un'assegnazione, scegli il worker meno carico
+        let leastLoadedWorker = 0;
+        let minLoad = Infinity;
+        
+        for (let i = 0; i < workerCount; i++) {
+            const load = this.workerLoad.get(i) || 0;
+            if (load < minLoad) {
+                minLoad = load;
+                leastLoadedWorker = i;
+            }
+        }
+        
+        this.pairToWorkerMap.set(pairId, leastLoadedWorker);
+        return leastLoadedWorker;
     }
     
     /**
@@ -2398,7 +2816,7 @@ class MoleculeInteractionManager {
     
     /**
      * Resetta le strutture dati per una nuova sessione di lavoro
-     * ma mantiene la cache delle interazioni per riutilizzarla
+     * ma mantiene la cache delle interazioni e le assegnazioni worker-molecola
      */
     resetWorkSession() {
         this.calculatedPairs.clear();
@@ -2407,6 +2825,8 @@ class MoleculeInteractionManager {
             totalCalculations: 0,
             cacheHits: 0
         };
+        // Non resetta moleculeWorkerAssignments o workerMoleculeGroups
+        // per mantenere la persistenza delle assegnazioni
     }
     
     /**
@@ -2427,50 +2847,29 @@ class MoleculeInteractionManager {
     }
     
     /**
-     * Divide il piano di lavoro in lotti bilanciati per elaborazione parallela
-     * Corretto per garantire che ciascuna interazione sia assegnata a una sola partizione
-     */
-    partitionWorkPlan(workPlan, workerCount) {
-        if (workPlan.length === 0 || workerCount <= 1) {
-            return [workPlan];
-        }
-        
-        // Determina il numero ottimale di partizioni
-        const partitionCount = Math.min(workerCount, Math.ceil(workPlan.length / 10));
-        const partitions = Array(partitionCount).fill().map(() => []);
-        
-        // Distribuisci in modo che ogni partizione abbia elementi unici
-        // Ogni elemento del workPlan va in una sola partizione
-        for (let i = 0; i < workPlan.length; i++) {
-            // Distribuisci in modo bilanciato tra le partizioni
-            const partitionIndex = Math.floor(i / Math.ceil(workPlan.length / partitionCount));
-            
-            // Assicurati di non superare il numero di partizioni
-            if (partitionIndex < partitionCount) {
-                partitions[partitionIndex].push(workPlan[i]);
-            } else {
-                // Nel caso in cui ci siano più elementi di quanti previsti, aggiungi all'ultima partizione
-                partitions[partitionCount - 1].push(workPlan[i]);
-            }
-        }
-        
-        return partitions;
-    }
-    
-    /**
-     * Genera un piano di distribuzione del lavoro completo per i subworker
+     * Genera un piano di distribuzione del lavoro per i subworker,
+     * mantenendo consistenti le assegnazioni
      */
     generateDistributionPlan(molecules, workerCount) {
-        // Crea il piano di lavoro completo
-        const workPlan = this.buildInteractionWorkPlan(molecules);
+        // Crea il piano di lavoro assegnando già le interazioni ai worker
+        let workPlan = this.buildInteractionWorkPlan(molecules, workerCount);
         
-        // Dividi il piano in partizioni bilanciate
-        const partitions = this.partitionWorkPlan(workPlan, workerCount);
+        // Raggruppa le interazioni per worker
+        const workerPartitions = new Map();
+        for (let i = 0; i < workerCount; i++) {
+            workerPartitions.set(i, []);
+        }
+        
+        workPlan.forEach(interaction => {
+            const targetPartition = workerPartitions.get(interaction.workerId) || workerPartitions.get(0);
+            targetPartition.push(interaction);
+        });
         
         // Prepara il piano di distribuzione
-        return partitions.map(partition => ({
-            interactions: partition,
-            moleculeIndices: this.getRequiredMoleculeIndices(partition)
+        return Array.from(workerPartitions.entries()).map(([workerId, interactions]) => ({
+            workerId,
+            interactions,
+            moleculeIndices: this.getRequiredMoleculeIndices(interactions)
         }));
     }
     
@@ -2490,16 +2889,17 @@ class MoleculeInteractionManager {
 
     /**
      * Genera un piano di distribuzione del lavoro basato su interazioni prioritarie
+     * e mantiene consistenti le assegnazioni worker-molecola
      * @param {Array} molecules - Tutte le molecole nella simulazione
      * @param {number} workerCount - Numero di worker disponibili
      * @param {Map} significantPairs - Mappa delle coppie significative con priorità
-     * @returns {Array} Piano di distribuzione ottimizzato
+     * @returns {Array} Piano di distribuzione ottimizzato con consistenza nel tempo
      */
     generateDistributionPlanWithPriorities(molecules, workerCount, significantPairs) {
-        // Reset del piano di elaborazione
-        this.resetWorkSession();
+        // Reset del piano di elaborazione mantenendo le assegnazioni
+        this.resetWorkSession();        
         
-        const workPlan = [];
+        let workPlan = [];
         const moleculeCount = molecules.length;
         const moleculeIndices = new Map();
         
@@ -2523,12 +2923,18 @@ class MoleculeInteractionManager {
                     continue;
                 }
                 
+                // Determina a quale worker assegnare questa interazione
+                const workerId = this.determineWorkerForInteraction(
+                    pairInfo.mol1Id, pairInfo.mol2Id, workerCount
+                );
+                
                 // Aggiungi al piano con priorità elevata
                 workPlan.push({
-                    mol1Index: mol1Index,
-                    mol2Index: mol2Index,
+                    mol1Index,
+                    mol2Index,
                     mol1Id: pairInfo.mol1Id,
                     mol2Id: pairInfo.mol2Id,
+                    workerId,
                     priority: pairInfo.priority || 10.0 // Priorità alta per default
                 });
                 
@@ -2537,9 +2943,6 @@ class MoleculeInteractionManager {
         }
         
         // FASE 2: Aggiungi un sottoinsieme di altre interazioni potenziali
-        // Utilizza una matrice triangolare superiore ma con limite al numero di interazioni
-        
-        // Calcola limite interazioni basato sulla complessità
         const maxTotalInteractions = Math.min(
             2000, // Limite assoluto per prestazioni
             Math.ceil(moleculeCount * Math.sqrt(moleculeCount) * 0.2) // Limite scalato
@@ -2570,13 +2973,16 @@ class MoleculeInteractionManager {
                     continue;
                 }
                 
+                // Determina il worker ideale per questa interazione
+                const workerId = this.determineWorkerForInteraction(mol1.id, mol2.id, workerCount);
+                
                 // Aggiungi la coppia al piano di lavoro
                 workPlan.push({
                     mol1Index: i,
                     mol2Index: j,
                     mol1Id: mol1.id,
                     mol2Id: mol2.id,
-                    // Priorità basata sulla distanza
+                    workerId,
                     priority: this.estimateInteractionPriority(mol1, mol2)
                 });
                 
@@ -2589,18 +2995,55 @@ class MoleculeInteractionManager {
                 }
             }
         }
+
+        // 3. Inizializza o aggiorna la mappa del carico di lavoro
+        if (this.workerLoad.size !== workerCount) {
+            this.workerLoad.clear();
+            for (let i = 0; i < workerCount; i++) {
+                this.workerLoad.set(i, 0);
+            }
+            
+            // Ri-conteggia il carico attuale se ci sono già assegnazioni
+            for (const [workerId, molecules] of this.workerMoleculeGroups.entries()) {
+                if (workerId < workerCount) {
+                    this.workerLoad.set(workerId, molecules.size);
+                }
+            }
+        }
         
-        // Ordina il piano di lavoro in base alla priorità (più alta prima)
-        const sortedPlan = workPlan.sort((a, b) => b.priority - a.priority);
+        // 4. Assegna le nuove molecole ai worker meno carichi
+        // Preferendo quelli con molecole con cui interagiscono frequentemente
+
+        const newMolecules = molecules.filter(molecule => 
+            !this.prevMolecules.some(prev => prev.id === molecule.id)
+        );
+          
+        this.prevMolecules = [...molecules];
+
+        for (const newMolId of newMolecules) {
+            // Determina il worker ideale basandosi sull'affinità con molecole già assegnate
+            const idealWorkerId = this.findIdealWorkerForMolecule(newMolId, molecules, workerCount);
+            
+            // Aggiungi la molecola al gruppo del worker
+            if (!this.workerMoleculeGroups.has(idealWorkerId)) {
+                this.workerMoleculeGroups.set(idealWorkerId, new Set());
+            }
+            this.workerMoleculeGroups.get(idealWorkerId).add(newMolId);
+            this.moleculeWorkerAssignments.set(newMolId, idealWorkerId);
+            
+            // Aggiorna il carico
+            this.workerLoad.set(idealWorkerId, this.workerLoad.get(idealWorkerId) + 1);
+        }
         
-        // Dividi il piano in partizioni bilanciate
-        const partitions = this.partitionWorkPlan(sortedPlan, workerCount);
+        // 5. Aggiorna la lista delle molecole viste in questa esecuzione
+        this.lastSeenMolecules = new Set(molecules);
         
-        // Prepara il piano di distribuzione
-        return partitions.map(partition => ({
-            interactions: partition,
-            moleculeIndices: this.getRequiredMoleculeIndices(partition)
-        }));
+        // 6. Ribilancia se necessario (solo occasionalmente o se grave sbilanciamento)
+        this.rebalanceWorkerLoadsIfNeeded(workerCount);
+
+        // Aggiorna le assegnazioni molecola-worker
+        workPlan = this.updateMoleculeWorkerAssignments(molecules, workerCount, workPlan);
+        return workPlan;
     }
 }
 
@@ -3244,7 +3687,7 @@ function handleSubWorkerInitialization(message) {
 
     // Crea istanza regole
     const rules = createCustomRules();
-    rules.setConstant('time_scale', message.timeScale || 0.1);
+    rules.setConstant('time_scale', message.timeScale || 1);
 
     // Inizializza con set molecole vuoto - riceveremo chunk da processare
     simulation = new OptimizedChemistry(rules, message.size, 0, message.maxNumber);
@@ -3747,7 +4190,7 @@ function cleanupResources() {
 async function handleInitialization(message) {
     const { size, moleculeCount, maxNumber, timeScale } = message;
     const rules = createCustomRules();
-    rules.setConstant('time_scale', timeScale || 0.1);
+    rules.setConstant('time_scale', timeScale || 1);
 
     // Inizializza simulazione con versione ottimizzata
     simulation = new OptimizedChemistry(rules, size, moleculeCount, maxNumber);
