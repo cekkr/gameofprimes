@@ -29,10 +29,10 @@ class SimulationRules {
         this.interaction_rules = [];
         this.reaction_rules = [];
         this.constants = {
-            'G': 0.05,           // Costante gravitazionale (ridotta per renderla più debole)
-            'k': 0.5,            // Costante elettrostatica
+            'G': 0.1,           // Costante gravitazionale (ridotta per renderla più debole)
+            'k': 1.0,            // Costante elettrostatica
             'min_distance': 0.1, // Distanza minima per evitare singolarità
-            'max_force': 1000.0,   // Forza massima applicabile
+            'max_force': 1.0,   // Forza massima applicabile
             'damping': 0.5,     // Smorzamento
             'temperature_factor': 1.0,
             'quantum_strength': 0.2,
@@ -41,7 +41,7 @@ class SimulationRules {
             'cooling_period': 500, // Tempo in ms durante il quale le molecole non reagiscono dopo una reazione
             'entropy_factor': 0.3, // Fattore di entropia per prevenire il collasso gravitazionale
             'family_repulsion': 1.0, // Intensità della repulsione tra "parenti"
-            'random_interaction_probability': 0.1 // Probabilità di considerare molecole casuali nel caching
+            'random_interaction_probability': 0.2 // Probabilità di considerare molecole casuali nel caching
         };
         
         // Registro di relazioni parentali: mantiene traccia di quali molecole sono "parenti"

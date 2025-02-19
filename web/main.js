@@ -30,7 +30,7 @@ let infoDiv, moleculeInfoDiv;
  * Main initialization function
  */
 function init() {
-  const spaceDimension = 100;
+  const spaceDimension = 200;
   
   // Scene setup
   scene = new THREE.Scene();
@@ -56,7 +56,7 @@ function init() {
   setupSceneHelpers(spaceDimension);
 
   // Initialize simulation
-  initializeSimulation(spaceDimension, 1);
+  initializeSimulation(spaceDimension, 2);
 
   // Make the simulation state globally accessible
   makeGloballyAccessible();
@@ -143,7 +143,7 @@ function initializeSimulation(size, moleculeCount = 5, maxNumber = 200, timeScal
 
   try {
     // Create worker
-    simulationWorker = new Worker(new URL('./advanced-simulation-worker.js', import.meta.url), {
+    simulationWorker = new Worker(new URL('./simulation-worker.js', import.meta.url), {
       type: 'module'
     });
     
@@ -233,7 +233,7 @@ function handleUpdateMessage(data) {
     
     // Process molecule sizes
     for (let mol of updatedMolecules) {
-      mol.size = calculateMoleculeSize(mol);
+      mol.size = calculateMoleculeSize(mol);      
     }
     
     // Remove deleted molecules
