@@ -591,7 +591,7 @@ function animate(timestamp) {
 let init_done = false;
 
 // MODIFICARE: Sovrascrivere initializeEnhancedSimulation
-function initializeEnhancedSimulation(size = 10, molecolePerUnit = 5, maxNumber = 150, timeScale = 0.1) {
+function initializeEnhancedSimulation(size = 10, molecolePerUnit = 10, maxNumber = 200, timeScale = 0.2) {
     console.log("Inizializzazione simulazione avanzata...");
 
     // Termina worker esistente se presente
