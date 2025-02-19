@@ -1733,7 +1733,8 @@ handleRemoteReaction(reaction) {
                 } else {
                     fragmentMol.velocity = [
                         (Math.random() - 0.5) * 0.5 * this.temperature,
-                        (Math.random() - 0.5) * 0.5 * this.temperature,                        (Math.random() - 0.5) * 0.5 * this.temperature
+                        (Math.random() - 0.5) * 0.5 * this.temperature,                        
+                        (Math.random() - 0.5) * 0.5 * this.temperature
                     ];
                 }
 
@@ -4028,6 +4029,7 @@ function getPerformanceStats() {
 function sendUpdate() {
     try {
         // Prepara dati usando posizioni stabili quando disponibili
+        simulation.stabilizePositions();
         const moleculeData = getOptimizedMoleculeData(simulation.stablePositions);
         const perfStats = getPerformanceStats();
 
