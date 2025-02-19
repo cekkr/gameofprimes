@@ -57,7 +57,7 @@ function handleWorkerMessage(event) {
         // Gestione molecole
         if (event.data.molecules) {
             const updatedMolecules = event.data.molecules.molecules || [];
-            const removedIds = event.data.molecules.removedIds || [];
+            const removedIds = event.data.molecules.removedIds || [];            
 
             // Debug
             console.log(`Main: ricevute ${updatedMolecules.length} molecole, ${removedIds.length} rimosse`);
@@ -65,6 +65,10 @@ function handleWorkerMessage(event) {
             // Aggiorna dati simulazione
             simulationData.molecules = updatedMolecules;
             simulationData.reactionCount = event.data.reactionCount || 0;
+
+            for(let mol of updatedMolecules){
+                mol.size = calculateMoleculeSize(mol);
+            }
 
             // Rimuovi mesh di molecole non più presenti
             if (removedIds.length > 0) {
@@ -79,7 +83,7 @@ function handleWorkerMessage(event) {
             }
 
             // Aggiorna o crea mesh per molecole
-            updateMoleculeMeshes();
+            updateMoleculeMeshes();            
         } else {
             console.warn("Messaggio update ricevuto senza dati molecole");
         }
@@ -428,7 +432,7 @@ function bindControlEvents() {
 
 // MODIFICARE: Sovrascrivere la funzione init per chiamare setupUserInterface dopo la creazione del renderer
 function init() {
-    const spaceDimension = 10;
+    const spaceDimension = 100;
 
     // Inizializza simulazione migliorata
     initializeEnhancedSimulation(spaceDimension);
@@ -552,6 +556,8 @@ function updateMoleculeMeshes() {
             // Aggiungi o aggiorna vettori di velocità se richiesto
             updateVelocityVector(mesh, molData, showVectors);
         }
+
+        updateHalo(mesh, molData);
     });
 }
 
