@@ -337,39 +337,39 @@ onmessage = function(event) {
     // Verifica se simulazione è inizializzata per la maggior parte dei comandi
     if (event.data.type !== 'init' && !simulation) {
         console.error("Worker: simulazione non inizializzata per "+event.data.type);
-        postMessage({ 
-            type: 'error', 
+        postMessage({
+            type: 'error',
             message: 'Simulazione non inizializzata per '+event.data.type
         });
         return;
     }
-    
+
     try {
         switch (event.data.type) {
             case 'init':
                 const { size, moleculeCount, maxNumber, timeScale } = event.data;
                 const rules = createCustomRules();
                 rules.setConstant('time_scale', timeScale || 0.1);
-                
+
                 // Inizializza la simulazione
                 simulation = new EnhancedChemistry(rules, size, moleculeCount, maxNumber);
                 console.log(`Worker: simulazione inizializzata con ${moleculeCount} molecole, timeScale=${timeScale}`);
-                
+
                 // Passo iniziale
                 simulation.step();
                 sendUpdate();
                 break;
-                
+
             case 'step':
                 // Esegui passo simulazione
                 simulation.step();
                 sendUpdate();
                 break;
-                
+
             case 'cleanup':
                 cleanupResources();
                 break;
-                
+
             case 'set_temperature':
                 // Imposta temperatura
                 if (typeof event.data.value === 'number') {
@@ -380,7 +380,7 @@ onmessage = function(event) {
                     console.error("Worker: valore temperatura non valido", event.data.value);
                 }
                 break;
-                
+
             case 'set_timescale':
                 // Imposta timeScale
                 if (typeof event.data.value === 'number') {
@@ -389,7 +389,7 @@ onmessage = function(event) {
                     console.log(`Worker: timeScale impostato a ${newTimeScale}`);
                 }
                 break;
-                
+
             case 'add_molecules':
                 // Aggiungi molecole
                 const count = event.data.count || 20;
@@ -397,40 +397,39 @@ onmessage = function(event) {
                 console.log(`Worker: aggiunte ${count} nuove molecole`);
                 sendUpdate();
                 break;
-                
+
             case 'set_visualization':
                 // Al momento il worker non necessita di fare nulla per questo messaggio
                 // serve solo per la parte grafica nel thread principale
                 console.log(`Worker: modalità visualizzazione ${event.data.mode} (ignorata nel worker)`);
                 break;
-                
+
             case 'pause':
                 // Il worker non ha bisogno di fare nulla per la pausa,
                 // è il thread principale che decide se inviare o meno 'step'
                 console.log("Worker: ricevuto comando pausa (ignorato nel worker)");
                 break;
-                
+
             default:
                 console.warn(`Worker: messaggio sconosciuto '${event.data.type}'`);
         }
     } catch (error) {
         console.error(`Worker: errore durante l'elaborazione del messaggio '${event.data.type}'`, error);
-        postMessage({ 
-            type: 'error', 
-            message: `Errore nel worker: ${error.message}` 
+        postMessage({
+            type: 'error',
+            message: `Errore nel worker: ${error.message}`
         });
     }
 };
 
-// MIGLIORAMENTO FUNZIONE SENDUPDATES
 function sendUpdate() {
     try {
         // Prepara dati per l'invio
         const moleculeData = getOptimizedMoleculeData();
-        
+
         // Debug
         console.log(`Worker: invio update con ${moleculeData.molecules.length} molecole, ${moleculeData.removedIds.length} rimosse`);
-        
+
         // Invia messaggio
         postMessage({
             type: 'update',
@@ -440,9 +439,9 @@ function sendUpdate() {
         });
     } catch (error) {
         console.error("Worker: errore durante l'invio dell'update", error);
-        postMessage({ 
-            type: 'error', 
-            message: `Errore nell'invio update: ${error.message}` 
+        postMessage({
+            type: 'error',
+            message: `Errore nell'invio update: ${error.message}`
         });
     }
 }

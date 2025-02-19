@@ -1,7 +1,5 @@
 import { PrimeMolecule } from './molecule.js';
 
-import { PrimeMolecule } from './molecule.js';
-
 class InteractionRule {
     constructor(name, priority, condition, forceFunction, strength = 1.0, description = "") {
         this.name = name;

@@ -430,6 +430,10 @@ function bindControlEvents() {
 function init() {
     const spaceDimension = 10;
 
+    // Inizializza simulazione migliorata
+    initializeEnhancedSimulation(spaceDimension);
+
+
     // Scene setup
     scene = new THREE.Scene();
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -472,9 +476,6 @@ function init() {
     setTimeout(() => {
         bindControlEvents();
     }, 100);
-
-    // Inizializza simulazione migliorata
-    initializeEnhancedSimulation(spaceDimension);
 
     // Usa setTimeout per verificare lo stato del worker dopo 5 secondi
     setTimeout(checkWorkerStatus, 5000);
@@ -594,7 +595,7 @@ function initializeEnhancedSimulation(size = 10, molecolePerUnit = 5, maxNumber 
 
     try {
         // Crea il worker con gestione errori
-        simulationWorker = new Worker(new URL('./advanced-simulation-worker.js', import.meta.url), {
+        simulationWorker = new Worker(new URL('./advanced-simulation-worker.js', import.meta.url), { // advanced-simulation-worker.js
             type: 'module'
         });
 
