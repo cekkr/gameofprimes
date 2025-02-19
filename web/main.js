@@ -14,10 +14,12 @@ let selectedMolecule = null;
 
 
 function init() {
+    const simulationSize = 25
+
     // Scene setup
     scene = new THREE.Scene();
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.z = 20;
+    camera.position.z = simulationSize * 2;
 
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -40,7 +42,7 @@ function init() {
     scene.add(axesHelper);
 
     // Boundary box
-    const boxSize = 10; // Same as Python simulation size
+    const boxSize = simulationSize; // Same as Python simulation size
     const boxGeometry = new THREE.BoxGeometry(boxSize, boxSize, boxSize);
     const wireframe = new THREE.WireframeGeometry(boxGeometry);
     const line = new THREE.LineSegments(wireframe);
@@ -55,10 +57,10 @@ function init() {
     // Initial simulation setup (send parameters to worker)
      simulationWorker.postMessage({
         type: 'init',
-        size: 10,
-        moleculeCount: 50,
-        maxNumber: 1000,
-        timeScale: 0.01, // Send timeScale
+        size: simulationSize,
+        moleculeCount: 300,
+        maxNumber: 100,
+        timeScale: 0.1, // Send timeScale
     });
 
 
