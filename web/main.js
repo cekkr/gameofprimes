@@ -59,8 +59,8 @@ function init() {
         type: 'init',
         size: spaceDimension,
         moleculeCount: 10*spaceDimension,
-        maxNumber: 1000,
-        timeScale: 0.1, // Send timeScale
+        maxNumber: 200,
+        timeScale: 0.25, // Send timeScale
     });
 
 
