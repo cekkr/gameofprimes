@@ -138,12 +138,49 @@ class SimulationRules {
     }
 }
 
+class SimulationRules {
+    constructor() {
+        this.interaction_rules = [];
+        this.reaction_rules = [];
+        this.constants = {
+            'G': 0.1,
+            'k': 1.0,
+            'min_distance': 0.5,
+            'max_force': 10.0,
+            'damping': 0.95,
+            'temperature_factor': 1.0,
+            'quantum_strength': 0.2,
+            'time_scale': 1.0
+        };
+    }
+
+    addInteractionRule(rule) {
+        this.interaction_rules.push(rule);
+        this.interaction_rules.sort((a, b) => b.priority - a.priority);
+    }
+
+    addReactionRule(rule) {
+        this.reaction_rules.push(rule);
+        this.reaction_rules.sort((a, b) => b.priority - a.priority);
+    }
+
+    setConstant(name, value) {
+        this.constants[name] = value;
+    }
+
+    getConstant(name) {
+        return this.constants[name] || 0.0;
+    }
+}
+
+// Miglioramenti alle regole di reazione in rules.js
+
 function createCustomRules() {
     const rules = new SimulationRules();
 
     // ==== REGOLE DI INTERAZIONE FISICA ====
 
-    // 1. Gravità universale modificata con fattore di entropia
+    // 1. Gravità universale (tra tutte le molecole)
     function gravityCondition(factors1, factors2) { 
         return true; // Sempre attiva
     }
@@ -151,55 +188,36 @@ function createCustomRules() {
     function gravityForce(direction, distance, mass1, mass2) {
         const G = rules.getConstant('G');
         const minDistance = rules.getConstant('min_distance');
-        const entropyFactor = rules.getConstant('entropy_factor');
-        
         // Previeni divisione per zero
         const effectiveDistance = Math.max(distance, minDistance);
-        
-        // Forza gravitazionale standard
-        const baseForce = direction.map(x => x * G * mass1 * mass2 / (effectiveDistance ** 2));
-        
-        // A grandi distanze la forza rimane attrattiva, ma a distanze ravvicinate
-        // aggiungiamo un termine entropico che contrasta il collasso gravitazionale
-        if (distance < 5.0) {
-            // Termine entropico: repulsione che aumenta a distanze molto ravvicinate
-            const entropyTerm = direction.map(x => -x * entropyFactor * mass1 * mass2 / (effectiveDistance ** 4));
-            
-            // Combina i due effetti
-            return baseForce.map((f, i) => f + entropyTerm[i]);
-        }
-        
-        return baseForce;
+        return direction.map(x => x * G * mass1 * mass2 / (effectiveDistance ** 2));
     }
     
     rules.addInteractionRule(
-        new InteractionRule("Modified Gravity", 1.0, gravityCondition, gravityForce, 0.15, 
-        "Attrazione gravitazionale con termine entropico per prevenire il collasso")
+        new InteractionRule("Gravity", 1.0, gravityCondition, gravityForce, 0.15, 
+        "Attrazione gravitazionale universale")
     );
 
-    // 2. Risonanza di fattori primi con oscillazione
+    // 2. Risonanza di fattori primi
     function resonanceCondition(factors1, factors2) {
         const shared = Object.keys(factors1).filter(key => factors2.hasOwnProperty(key));
         return shared.length >= 1;
     }
     
     function resonanceForce(direction, distance, charge1, charge2) {
-        // Crea un movimento orbitale oscillante
+        // Crea un movimento orbitale
         const orbital = crossProduct(direction, [0, 1, 0]);
         const norm = Math.sqrt(orbital[0]**2 + orbital[1]**2 + orbital[2]**2);
-        
-        if (norm > 0) {
-            // Modula la forza con una funzione sinusoidale in base alla distanza
-            // Questo crea orbite più stabili e interessanti
-            const oscillationFactor = Math.sin(distance * 1.5) * 0.5 + 0.5;
-            return orbital.map(x => (x / norm / (distance ** 0.8)) * oscillationFactor); 
+        if (norm > 0) { 
+            // Forza più forte quando più vicini, ma non troppo da esplodere
+            return orbital.map(x => x / norm / (distance ** 0.8)); 
         }
         return [0, 0, 0];
     }
     
     rules.addInteractionRule(
         new InteractionRule("Prime Resonance", 2.0, resonanceCondition, resonanceForce, 0.3,
-        "Risonanza orbitale oscillante tra molecole con fattori primi comuni")
+        "Risonanza orbitale tra molecole con fattori primi comuni")
     );
 
     // 3. Repulsione elettrostatica tra molecole con carica dello stesso segno
@@ -245,73 +263,11 @@ function createCustomRules() {
         new InteractionRule("Charge Attraction", 1.5, chargeAttractionCondition, chargeAttractionForce, 0.25,
         "Attrazione tra molecole con cariche di segno opposto")
     );
-    
-    // 5. NUOVA REGOLA: Repulsione tra molecole "parenti"
-    function familyRepulsionCondition(factors1, factors2, mol1, mol2) {
-        // Verifica se le molecole hanno una relazione registrata
-        return rules.areRelated(mol1.id, mol2.id);
-    }
-    
-    function familyRepulsionForce(direction, distance, mass1, mass2, mol1, mol2) {
-        const now = performance.now();
-        const repulsionFactor = rules.getFamilyRepulsionFactor(mol1.id, mol2.id, now);
-        
-        if (repulsionFactor <= 0) return [0, 0, 0];
-        
-        const minDistance = rules.getConstant('min_distance');
-        const effectiveDistance = Math.max(distance, minDistance);
-        
-        // Forza repulsiva che diminuisce con la distanza
-        return direction.map(x => -x * repulsionFactor / (effectiveDistance ** 1.5));
-    }
-    
-    rules.addInteractionRule(
-        new InteractionRule("Family Repulsion", 3.0, familyRepulsionCondition, familyRepulsionForce, 1.0,
-        "Repulsione temporanea tra molecole che hanno recentemente reagito")
-    );
 
-    // 6. NUOVA REGOLA: Attrazione/repulsione basata su congruenza modulo
-    function modularInteractionCondition(factors1, factors2) {
-        // Calcola i numeri totali
-        const num1 = Object.entries(factors1).reduce((acc, [prime, count]) => acc * (prime ** count), 1);
-        const num2 = Object.entries(factors2).reduce((acc, [prime, count]) => acc * (prime ** count), 1);
-        
-        // Attiva se almeno uno dei numeri è maggiore di 10
-        return num1 > 10 || num2 > 10;
-    }
-    
-    function modularInteractionForce(direction, distance, mass1, mass2, mol1, mol2) {
-        // Usa la congruenza modulo per determinare attrazione o repulsione
-        const modPrime = 7; // Un numero primo per il calcolo del modulo
-        const res1 = mol1.number % modPrime;
-        const res2 = mol2.number % modPrime;
-        
-        // Se i residui sono uguali: repulsione; se diversi: attrazione
-        const isRepulsive = res1 === res2;
-        
-        const minDistance = rules.getConstant('min_distance');
-        const effectiveDistance = Math.max(distance, minDistance);
-        const forceMagnitude = 0.2 / (effectiveDistance ** 1.8);
-        
-        // Applica forza attrattiva o repulsiva basata sulla congruenza
-        return direction.map(x => x * forceMagnitude * (isRepulsive ? -1 : 1));
-    }
-    
-    rules.addInteractionRule(
-        new InteractionRule("Modular Interaction", 1.8, modularInteractionCondition, modularInteractionForce, 0.25,
-        "Interazione basata sulla congruenza modulo che crea cluster diversificati")
-    );
+    // ==== REGOLE DI REAZIONE CHIMICA ====
 
-    // ==== REGOLE DI REAZIONE CHIMICA MIGLIORATE ====
-
-    // 1. Fusione migliorata - con periodo di raffreddamento
-    function fusionCondition(factors1, factors2, mol1, mol2) {
-        // Verifica periodo di raffreddamento
-        const now = performance.now();
-        if (rules.isInCoolingPeriod(mol1, now) || rules.isInCoolingPeriod(mol2, now)) {
-            return false;
-        }
-        
+    // 1. Fusione - quando molecole con fattori primi comuni collidono
+    function fusionCondition(factors1, factors2) {
         // Devono avere almeno un fattore primo in comune
         const shared = Object.keys(factors1).filter(key => factors2.hasOwnProperty(key));
         // E ciascuna deve avere almeno un fattore non in comune con l'altra
@@ -369,40 +325,16 @@ function createCustomRules() {
         const fragmentVel = newVel.map(v => -v * 1.5);
         fragment.velocity = fragmentVel;
         
-        // Registra le relazioni di parentela
-        const now = performance.now();
-        newMol.setReactionTime(now);
-        fragment.setReactionTime(now);
-        
-        // Genera ID temporanei per poter registrare le relazioni
-        const tempIdNewMol = `temp-${Math.random().toString(36).substr(2, 9)}`;
-        const tempIdFragment = `temp-${Math.random().toString(36).substr(2, 9)}`;
-        newMol.id = tempIdNewMol;
-        fragment.id = tempIdFragment;
-        
-        // Registra relazioni tra tutte le molecole coinvolte
-        rules.registerFamily(mol1.id, tempIdNewMol, now);
-        rules.registerFamily(mol2.id, tempIdNewMol, now);
-        rules.registerFamily(mol1.id, tempIdFragment, now);
-        rules.registerFamily(mol2.id, tempIdFragment, now);
-        rules.registerFamily(tempIdNewMol, tempIdFragment, now);
-        
         return [newMol, fragment];
     }
     
     rules.addReactionRule(
         new ReactionRule("Fusion", 3.0, fusionCondition, fusionEffect, 0.25,
-        "Fusione di molecole con fattori comuni con emissione di frammento e periodo di raffreddamento")
+        "Fusione di molecole con fattori comuni con emissione di frammento")
     );
 
-    // 2. Fissione migliorata - con periodo di raffreddamento
-    function fissionCondition(factors1, factors2, mol1, mol2) {
-        // Verifica periodo di raffreddamento
-        const now = performance.now();
-        if (rules.isInCoolingPeriod(mol1, now) || rules.isInCoolingPeriod(mol2, now)) {
-            return false;
-        }
-        
+    // 2. Fissione - scissione di molecole grandi
+    function fissionCondition(factors1, factors2) {
         // Verifica se almeno una delle molecole è abbastanza grande
         const num1 = Object.entries(factors1)
             .reduce((acc, [prime, count]) => acc * (prime ** count), 1);
@@ -479,52 +411,25 @@ function createCustomRules() {
             Math.random() * 2 - 1
         ];
         
-        // Imposta il tempo di reazione e registra relazioni
-        const now = performance.now();
-        mol1New.setReactionTime(now);
-        mol2New.setReactionTime(now);
-        
-        // Genera ID temporanei
-        const tempId1 = `temp-${Math.random().toString(36).substr(2, 9)}`;
-        const tempId2 = `temp-${Math.random().toString(36).substr(2, 9)}`;
-        mol1New.id = tempId1;
-        mol2New.id = tempId2;
-        
-        // Registra relazioni
-        rules.registerFamily(bigger.id, tempId1, now);
-        rules.registerFamily(bigger.id, tempId2, now);
-        rules.registerFamily(smaller.id, tempId1, now);
-        rules.registerFamily(smaller.id, tempId2, now);
-        rules.registerFamily(tempId1, tempId2, now);
-        
         return [mol1New, mol2New, smaller];
     }
     
     rules.addReactionRule(
         new ReactionRule("Fission", 2.0, fissionCondition, fissionEffect, 0.35,
-        "Scissione di molecole grandi in frammenti più piccoli con periodo di raffreddamento")
+        "Scissione di molecole grandi in frammenti più piccoli")
     );
 
-    // 3. Decadimento spontaneo migliorato
-    function decayCondition(factors1, factors2, mol1, mol2) {
-        // Verifica periodo di raffreddamento
-        const now = performance.now();
-        if (rules.isInCoolingPeriod(mol1, now) || rules.isInCoolingPeriod(mol2, now)) {
-            return false;
-        }
-        
+    // 3. Decadimento spontaneo di molecole molto grandi
+    function decayCondition(factors1, factors2) {
         // Verifica se la prima molecola è instabile (numero grande)
         const num1 = Object.entries(factors1)
             .reduce((acc, [prime, count]) => acc * (prime ** count), 1);
-        const num2 = Object.entries(factors2)
-            .reduce((acc, [prime, count]) => acc * (prime ** count), 1);
             
-        return num1 > 150 || num2 > 150; // Molecole oltre 150 sono instabili
+        return num1 > 150; // Molecole oltre 150 sono instabili
     }
     
     function decayEffect(mol1, mol2) {
         let mol = (mol1.number > 150) ? mol1 : mol2;
-        if (mol.number <= 150) mol = (mol2.number > 150) ? mol2 : mol1;
         if (mol.number <= 150) return [];
         
         const factors = Object.entries(mol.prime_factors);
@@ -537,9 +442,6 @@ function createCustomRules() {
         const newMolecules = [];
         let remainingNumber = mol.number;
         
-        const now = performance.now();
-        const tempIds = [];
-        
         for (let i = 0; i < numFragments; i++) {
             const [prime, count] = factors[i];
             const fragmentNumber = parseInt(prime);
@@ -549,7 +451,6 @@ function createCustomRules() {
             
             // Crea un frammento con questo fattore primo
             const fragment = new PrimeMolecule(fragmentNumber, mol.position.slice());
-            fragment.setReactionTime(now);
             
             // Dai al frammento una velocità di espulsione
             const decayDirection = [
@@ -567,40 +468,17 @@ function createCustomRules() {
             const velocity = decayDirection.map(x => x / norm * 2.5);
             fragment.velocity = velocity;
             
-            // Genera ID temporaneo
-            const tempId = `temp-${Math.random().toString(36).substr(2, 9)}`;
-            fragment.id = tempId;
-            tempIds.push(tempId);
-            
             newMolecules.push(fragment);
         }
         
         // Aggiungi un frammento residuo se c'è ancora qualcosa
         if (remainingNumber > 1) {
             const remainder = new PrimeMolecule(remainingNumber, mol.position.slice());
-            remainder.setReactionTime(now);
             
             // Velocità residuo in direzione opposta per conservare momento
             remainder.velocity = newMolecules[0].velocity.map(v => -v * 0.5);
             
-            // Genera ID temporaneo
-            const tempId = `temp-${Math.random().toString(36).substr(2, 9)}`;
-            remainder.id = tempId;
-            tempIds.push(tempId);
-            
             newMolecules.push(remainder);
-        }
-        
-        // Registra relazioni tra tutti i frammenti e la molecola originale
-        for (const id of tempIds) {
-            rules.registerFamily(mol.id, id, now);
-            
-            // Registra anche relazioni tra i frammenti
-            for (const otherId of tempIds) {
-                if (id !== otherId) {
-                    rules.registerFamily(id, otherId, now);
-                }
-            }
         }
         
         return newMolecules;
@@ -608,174 +486,215 @@ function createCustomRules() {
     
     rules.addReactionRule(
         new ReactionRule("Spontaneous Decay", 1.8, decayCondition, decayEffect, 0.15,
-        "Decadimento spontaneo di molecole instabili con ripulsione tra frammenti")
-    );
-    
-    rules.addReactionRule(
-        new ReactionRule("Twin Prime Oscillation", 2.5, twinPrimeOscillationCondition, twinPrimeOscillationEffect, 0.4,
-        "Oscillazione quantistica tra numeri primi gemelli che crea un campo di energia temporaneo")
-    );
-    
-    // NUOVA REGOLA: Risonanza Antipolare
-    function antipolarResonanceCondition(factors1, factors2, mol1, mol2) {
-        // Verifica periodo di raffreddamento
-        const now = performance.now();
-        if (rules.isInCoolingPeriod(mol1, now) || rules.isInCoolingPeriod(mol2, now)) {
-            return false;
-        }
-        
-        // Calcola le cariche
-        const charge1 = calculateCharge(factors1);
-        const charge2 = calculateCharge(factors2);
-        
-        // Verifica se hanno cariche opposte e abbastanza forti
-        return Math.sign(charge1) !== Math.sign(charge2) && 
-               Math.abs(charge1) > 0.5 && 
-               Math.abs(charge2) > 0.5;
-    }
-    
-    function antipolarResonanceEffect(mol1, mol2) {
-        const now = performance.now();
-        
-        // Calcola il numero massimo di ciascuna molecola
-        const num1 = mol1.number;
-        const num2 = mol2.number;
-        
-        // Calcola nuovo numero tramite operazione XOR sui bit
-        const newNumber = num1 ^ num2;
-        
-        // Calcola posizione centrale
-        const midPos = [
-            (mol1.position[0] + mol2.position[0]) / 2,
-            (mol1.position[1] + mol2.position[1]) / 2,
-            (mol1.position[2] + mol2.position[2]) / 2
-        ];
-        
-        // Crea nuova molecola risonante
-        const resonantMol = new PrimeMolecule(newNumber, midPos);
-        resonantMol.setReactionTime(now);
-        
-        // Calcola velocità basata sulla conservazione del momento
-        const m1 = mol1.mass;
-        const m2 = mol2.mass;
-        for (let i = 0; i < 3; i++) {
-            resonantMol.velocity[i] = (mol1.velocity[i] * m1 + mol2.velocity[i] * m2) / (m1 + m2);
-            // Aggiungi una componente casuale per evitare collassi gravitazionali
-            resonantMol.velocity[i] += (Math.random() - 0.5) * 0.2;
-        }
-        
-        // Genera ID temporaneo
-        const tempId = `resonant-${Math.random().toString(36).substr(2, 9)}`;
-        resonantMol.id = tempId;
-        
-        // Registra relazioni di parentela per ripulsione temporanea
-        rules.registerFamily(mol1.id, tempId, now);
-        rules.registerFamily(mol2.id, tempId, now);
-        
-        return [resonantMol];
-    }
-    
-    rules.addReactionRule(
-        new ReactionRule("Antipolar Resonance", 2.3, antipolarResonanceCondition, antipolarResonanceEffect, 0.3,
-        "Risonanza tra molecole con cariche opposte che crea una nuova molecola con proprietà ibride")
+        "Decadimento spontaneo di molecole instabili in frammenti più piccoli")
     );
 
-    // NUOVA REGOLA: Oscillazione quantistica di numeri primi gemelli
-    function twinPrimeOscillationCondition(factors1, factors2, mol1, mol2) {
-        // Verifica periodo di raffreddamento
-        const now = performance.now();
-        if (rules.isInCoolingPeriod(mol1, now) || rules.isInCoolingPeriod(mol2, now)) {
-            return false;
-        }
-        
-        // Controlla se sono entrambi numeri primi puri
-        const isPure1 = Object.keys(factors1).length === 1 && 
-                       factors1[Object.keys(factors1)[0]] === 1;
-        const isPure2 = Object.keys(factors2).length === 1 && 
-                       factors2[Object.keys(factors2)[0]] === 1;
-                       
-        if (!isPure1 || !isPure2) return false;
-        
-        // Ottieni i numeri primi
-        const prime1 = parseInt(Object.keys(factors1)[0]);
-        const prime2 = parseInt(Object.keys(factors2)[0]);
-        
-        // Verifica se sono primi gemelli (differenza di 2)
-        return Math.abs(prime1 - prime2) === 2;
-    }
-    
-    function twinPrimeOscillationEffect(mol1, mol2) {
-        const now = performance.now();
-        
-        // Crea un campo di energia quantistica tra i due numeri primi gemelli
-        // che influenza le particelle circostanti
-        const prime1 = parseInt(Object.keys(mol1.prime_factors)[0]);
-        const prime2 = parseInt(Object.keys(mol2.prime_factors)[0]);
-        
-        // Calcola la posizione media come centro del campo quantistico
-        const centerPos = [
-            (mol1.position[0] + mol2.position[0]) / 2,
-            (mol1.position[1] + mol2.position[1]) / 2,
-            (mol1.position[2] + mol2.position[2]) / 2
-        ];
-        
-        // Crea un effetto di entanglement che mantiene i due numeri primi in oscillazione
-        // senza fonderli, creando uno stato quantistico speciale
-        const quantumField = new PrimeMolecule(prime1 * prime2, centerPos);
-        quantumField.setReactionTime(now);
-        
-        // Imposta proprietà speciali per questo campo
-        quantumField._isQuantumField = true;
-        quantumField._linkedPrimes = [prime1, prime2];
-        quantumField._originIds = [mol1.id, mol2.id];
-        quantumField._creationTime = now;
-        quantumField._lifetime = 5000; // Durata in ms
-        
-        // Genera un ID temporaneo
-        const tempId = `quantum-${Math.random().toString(36).substr(2, 9)}`;
-        quantumField.id = tempId;
-        
-        // Modifica la velocità dei primi gemelli per creare un effetto orbitale
-        const distanceVector = [
-            mol2.position[0] - mol1.position[0],
-            mol2.position[1] - mol1.position[1],
-            mol2.position[2] - mol1.position[2]
-        ];
-        
-        // Normalizza
-        const distance = Math.sqrt(
-            distanceVector[0]**2 + 
-            distanceVector[1]**2 + 
-            distanceVector[2]**2
-        );
-        
-        // Crea un vettore perpendicolare per l'orbita
-        const orbitVector = crossProduct(distanceVector, [0, 1, 0]);
-        const orbitNorm = Math.sqrt(
-            orbitVector[0]**2 + 
-            orbitVector[1]**2 + 
-            orbitVector[2]**2
-        );
-        
-        if (orbitNorm > 0) {
-            const orbitVelocity = orbitVector.map(v => v / orbitNorm * 0.5);
+    // 4. Scambio di esponenti (quando due molecole hanno fattori primi in comune ma con esponenti diversi)
+    function exponentExchangeCondition(factors1, factors2) {
+        // Trova i fattori primi condivisi
+        const sharedPrimes = Object.keys(factors1)
+            .filter(key => factors2.hasOwnProperty(key));
             
-            // Aggiorna velocità per creare un'orbita
-            mol1.velocity = orbitVelocity;
-            mol2.velocity = orbitVelocity.map(v => -v);
-            
-            // Aggiungi una componente di attrazione verso il centro del campo
-            for (let i = 0; i < 3; i++) {
-                mol1.velocity[i] += (centerPos[i] - mol1.position[i]) * 0.01;
-                mol2.velocity[i] += (centerPos[i] - mol2.position[i]) * 0.01;
+        // Verifica se hanno esponenti diversi
+        for (const prime of sharedPrimes) {
+            if (factors1[prime] !== factors2[prime]) {
+                return true;
             }
         }
         
-        // Registra relazioni di parentela
-        rules.registerFamily(mol1.id, tempId, now);
-        rules.registerFamily(mol2.id, tempId, now);
-        
-        // Teniamo i numeri primi originali e aggiungiamo il campo quantistico
-        return [mol1, mol2, quantumField];
+        return false;
     }
+    
+    function exponentExchangeEffect(mol1, mol2) {
+        // Trova i fattori primi condivisi
+        const sharedPrimes = Object.keys(mol1.prime_factors)
+            .filter(key => mol2.prime_factors.hasOwnProperty(key));
+            
+        // Trova un fattore primo con esponenti diversi
+        const transferPrime = sharedPrimes.find(
+            prime => mol1.prime_factors[prime] !== mol2.prime_factors[prime]
+        );
+        
+        if (!transferPrime) return [];
+        
+        let newMol1 = new PrimeMolecule(mol1.number, mol1.position.slice());
+        let newMol2 = new PrimeMolecule(mol2.number, mol2.position.slice());
+        
+        // Trasferisci parte del fattore primo
+        if (newMol1.prime_factors[transferPrime] > newMol2.prime_factors[transferPrime]) {
+            newMol1.number = Math.floor(newMol1.number / parseInt(transferPrime));
+            newMol2.number = newMol2.number * parseInt(transferPrime);
+        } else {
+            newMol2.number = Math.floor(newMol2.number / parseInt(transferPrime));
+            newMol1.number = newMol1.number * parseInt(transferPrime);
+        }
+        
+        // Aggiorna velocità (scambio di momento)
+        newMol1.velocity = [...mol1.velocity];
+        newMol2.velocity = [...mol2.velocity];
+        
+        return [newMol1, newMol2];
+    }
+    
+    rules.addReactionRule(
+        new ReactionRule("Exponent Exchange", 2.5, exponentExchangeCondition, exponentExchangeEffect, 0.4,
+        "Scambio di esponenti tra molecole con fattori primi comuni")
+    );
+
+    // 5. Scambio di fattori primi (quando hanno fattori sia comuni che diversi)
+    function primeExchangeCondition(factors1, factors2) {
+        const shared = Object.keys(factors1).filter(key => factors2.hasOwnProperty(key));
+        const diff1 = Object.keys(factors1).filter(key => !factors2.hasOwnProperty(key));
+        const diff2 = Object.keys(factors2).filter(key => !factors1.hasOwnProperty(key));
+        
+        return shared.length > 0 && diff1.length > 0 && diff2.length > 0;
+    }
+    
+    function primeExchangeEffect(mol1, mol2) {
+        // Identifica fattori primi unici di ciascuna molecola
+        const diff1 = Object.keys(mol1.prime_factors)
+            .filter(key => !mol2.prime_factors.hasOwnProperty(key));
+            
+        const diff2 = Object.keys(mol2.prime_factors)
+            .filter(key => !mol1.prime_factors.hasOwnProperty(key));
+            
+        if (diff1.length === 0 || diff2.length === 0) return [];
+        
+        // Scegli un fattore primo da scambiare da ciascuna molecola
+        const prime1 = diff1[0];
+        const prime2 = diff2[0];
+        
+        // Crea nuove molecole con i numeri scambiati
+        let newMol1 = new PrimeMolecule(mol1.number, mol1.position.slice());
+        let newMol2 = new PrimeMolecule(mol2.number, mol2.position.slice());
+        
+        // Scambia i fattori primi
+        newMol1.number = Math.floor(newMol1.number / parseInt(prime1));
+        newMol1.number = newMol1.number * parseInt(prime2);
+        
+        newMol2.number = Math.floor(newMol2.number / parseInt(prime2));
+        newMol2.number = newMol2.number * parseInt(prime1);
+        
+        // Leggera attrazione dopo lo scambio
+        const midpoint = [
+            (mol1.position[0] + mol2.position[0]) / 2,
+            (mol1.position[1] + mol2.position[1]) / 2,
+            (mol1.position[2] + mol2.position[2]) / 2
+        ];
+        
+        // Velocità verso il centro con componente originale
+        for (let i = 0; i < 3; i++) {
+            const toCenter = midpoint[i] - mol1.position[i];
+            newMol1.velocity[i] = mol1.velocity[i] * 0.8 + toCenter * 0.05;
+            
+            const toCenter2 = midpoint[i] - mol2.position[i];
+            newMol2.velocity[i] = mol2.velocity[i] * 0.8 + toCenter2 * 0.05;
+        }
+        
+        return [newMol1, newMol2];
+    }
+    
+    rules.addReactionRule(
+        new ReactionRule("Prime Exchange", 2.2, primeExchangeCondition, primeExchangeEffect, 0.3,
+        "Scambio di fattori primi tra molecole")
+    );
+    
+    // 6. Catalisi - molecole prime accelerano reazioni vicine
+    function catalysisCondition(factors1, factors2) {
+        // Verifica se una delle molecole è un numero primo puro
+        const isPrimePure1 = Object.keys(factors1).length === 1 && 
+                            factors1[Object.keys(factors1)[0]] === 1;
+                            
+        const isPrimePure2 = Object.keys(factors2).length === 1 && 
+                            factors2[Object.keys(factors2)[0]] === 1;
+                            
+        // L'altra deve essere composta
+        return (isPrimePure1 && !isPrimePure2) || (isPrimePure2 && !isPrimePure1);
+    }
+    
+    function catalysisEffect(mol1, mol2) {
+        // Identifica catalizzatore (molecola prima pura) e substrato
+        const isPrimePure1 = Object.keys(mol1.prime_factors).length === 1 && 
+                            mol1.prime_factors[Object.keys(mol1.prime_factors)[0]] === 1;
+                            
+        const catalyst = isPrimePure1 ? mol1 : mol2;
+        const substrate = isPrimePure1 ? mol2 : mol1;
+        
+        // Il catalizzatore rimane invariato, il substrato può trasformarsi
+        const catalystPrime = parseInt(Object.keys(catalyst.prime_factors)[0]);
+        
+        // Possibili trasformazioni:
+        // 1. Se il substrato è divisibile per il catalizzatore, si divide
+        if (substrate.number % catalystPrime === 0) {
+            const quotient = Math.floor(substrate.number / catalystPrime);
+            
+            // Crea nuova molecola divisa
+            const product = new PrimeMolecule(quotient, substrate.position.slice());
+            
+            // Velocità leggermente modificata
+            product.velocity = substrate.velocity.map(v => v * 1.1);
+            
+            // Il catalizzatore rimbalza
+            catalyst.velocity = catalyst.velocity.map(v => -v * 0.9);
+            
+            return [catalyst, product];
+        }
+        
+        // 2. Altrimenti, prova una moltiplicazione condizionale
+        const result = substrate.number * catalystPrime;
+        if (result < 1000) { // Limita la crescita eccessiva
+            // Crea prodotto moltiplicato
+            const product = new PrimeMolecule(result, substrate.position.slice());
+            
+            // Rallenta dopo l'aumento di massa
+            product.velocity = substrate.velocity.map(v => v * 0.7);
+            
+            // Il catalizzatore rimbalza
+            catalyst.velocity = catalyst.velocity.map(v => -v * 0.9);
+            
+            return [catalyst, product];
+        }
+        
+        // Se nessuna reazione è possibile, restituisci le molecole originali
+        return [catalyst, substrate];
+    }
+    
+    rules.addReactionRule(
+        new ReactionRule("Catalysis", 2.7, catalysisCondition, catalysisEffect, 0.25,
+        "Molecole prime pure agiscono da catalizzatori trasformando altre molecole")
+    );
+
+    // Funzioni helper
+    function crossProduct(a, b) {
+        return [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0]
+        ];
+    }
+    
+    function calculateCharge(factors) {
+        let charge = 0;
+        for (const prime in factors) {
+            const count = factors[prime];
+            const p = parseInt(prime);
+            
+            if (p === 2) {
+                charge += count * 2; // 2 ha carica fortemente positiva
+            } else if (p % 4 === 1) {
+                charge += count; // Primi 4k+1 hanno carica positiva
+            } else {
+                charge -= count; // Altri primi hanno carica negativa
+            }
+        }
+        
+        return charge / (1 + Math.log(
+            Object.entries(factors)
+                .reduce((acc, [p, c]) => acc * (p ** c), 1)
+        ));
+    }
+
+    return rules;
 }
+
+export { createCustomRules, InteractionRule, ReactionRule, SimulationRules };

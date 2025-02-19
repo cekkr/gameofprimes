@@ -428,7 +428,7 @@ function bindControlEvents() {
 
 // MODIFICARE: Sovrascrivere la funzione init per chiamare setupUserInterface dopo la creazione del renderer
 function init() {
-    const spaceDimension = 100;
+    const spaceDimension = 10;
 
     // Scene setup
     scene = new THREE.Scene();
@@ -602,7 +602,7 @@ function initializeEnhancedSimulation(size = 10, molecolePerUnit = 5, maxNumber 
         simulationWorker.onerror = function(error) {
             console.error("Errore nel worker:", error);
             displayErrorMessage(`Errore nella simulazione: ${error.message}`);
-        };
+        };       
 
         // Gestione messaggi
         simulationWorker.onmessage = handleWorkerMessage;
