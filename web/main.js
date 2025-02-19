@@ -133,7 +133,7 @@ function createInfoContainers() {
 /**
  * Initialize the simulation
  */
-function initializeSimulation(size, moleculeCount = 10, maxNumber = 200, timeScale = 1.0) {
+function initializeSimulation(size, moleculeCount = 5, maxNumber = 200, timeScale = 1.0) {
   console.log("Initializing simulation...");
   
   // Terminate existing worker if present
