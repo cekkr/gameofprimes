@@ -9,7 +9,7 @@ class MoleculeCentricCache {
       this.moleculeRelationships = new Map();
       
       // Soglia di obsolescenza relazioni (ms)
-      this.stalenessThreshold = 5000;
+      this.stalenessThreshold = 1000*30;
       
       // Massimo numero di relazioni per molecola
       this.maxRelationshipsPerMolecule = 20;

@@ -211,8 +211,7 @@ class MoleculeSerializer {
 
 
 // Configurazione per setup multi-worker
-const NUM_SUB_WORKERS = navigator.hardwareConcurrency || 4; // Usa core disponibili
-const INTERACTION_CACHE_LIFETIME = 50; // Frame per cui mantenere cache interazione
+const NUM_SUB_WORKERS = navigator.hardwareConcurrency || 8; // Usa core disponibili
 
 /**
  * Classe EnhancedChemistry - implementa simulazione di chimica con nuove regole fisiche
