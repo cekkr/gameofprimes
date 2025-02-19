@@ -208,7 +208,6 @@ class PrimeMolecule:
 
         return tuple(color)
 
-
 class PrimeChemistry:
     """Main simulation class"""
 

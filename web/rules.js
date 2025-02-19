@@ -1,5 +1,7 @@
 import { PrimeMolecule } from './molecule.js';
 
+import { PrimeMolecule } from './molecule.js';
+
 class InteractionRule {
     constructor(name, priority, condition, forceFunction, strength = 1.0, description = "") {
         this.name = name;
@@ -135,41 +137,6 @@ class SimulationRules {
     // Determina se una molecola è in "periodo di raffreddamento" dopo una reazione
     isInCoolingPeriod(molecule, currentTime) {
         return (currentTime - molecule.lastReactionTime) < this.getConstant('cooling_period');
-    }
-}
-
-class SimulationRules {
-    constructor() {
-        this.interaction_rules = [];
-        this.reaction_rules = [];
-        this.constants = {
-            'G': 0.1,
-            'k': 1.0,
-            'min_distance': 0.5,
-            'max_force': 10.0,
-            'damping': 0.95,
-            'temperature_factor': 1.0,
-            'quantum_strength': 0.2,
-            'time_scale': 1.0
-        };
-    }
-
-    addInteractionRule(rule) {
-        this.interaction_rules.push(rule);
-        this.interaction_rules.sort((a, b) => b.priority - a.priority);
-    }
-
-    addReactionRule(rule) {
-        this.reaction_rules.push(rule);
-        this.reaction_rules.sort((a, b) => b.priority - a.priority);
-    }
-
-    setConstant(name, value) {
-        this.constants[name] = value;
-    }
-
-    getConstant(name) {
-        return this.constants[name] || 0.0;
     }
 }
 

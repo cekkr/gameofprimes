@@ -46,10 +46,10 @@ class EnhancedChemistry {
             
             // Scegli un numero dalla distribuzione
             const number = numberChoices[Math.floor(Math.random() * numberChoices.length)];
-            
-            // Crea molecola con ID stabile
-            const mol = new PrimeMolecule(number, pos);
-            mol.id = `initial-${this.nextMoleculeId++}`;
+        
+           // Crea molecola con ID stabile
+           const mol = new PrimeMolecule(number, pos);
+           mol.id = `initial-${this.nextMoleculeId++}`;
             
             // Imposta velocità iniziale casuale
             mol.velocity = [
@@ -504,3 +504,296 @@ function cleanupResources() {
     previousMoleculeIds.clear();
     postMessage({ type: 'cleanup_complete' });
 }
+
+///
+/// Extension
+///
+
+// Estendi la classe PrimeMolecule per supportare il nuovo sistema di parentela
+PrimeMolecule.prototype.isRelatedTo = function(otherMolecule, rules) {
+    if (!this.id || !otherMolecule.id) return false;
+    return rules.areRelated(this.id, otherMolecule.id);
+};
+
+// Funzione per gestire il campo quantistico
+function updateQuantumFields(simulation) {
+    const now = performance.now();
+    
+    // Filtra tutte le molecole quantistiche
+    const quantumFields = simulation.molecules.filter(mol => mol._isQuantumField);
+    const fieldsToRemove = [];
+    
+    for (const field of quantumFields) {
+        // Verifica se il campo è scaduto
+        if (now - field._creationTime > field._lifetime) {
+            fieldsToRemove.push(field);
+            continue;
+        }
+        
+        // Calcola l'effetto del campo sulle altre molecole
+        for (const mol of simulation.molecules) {
+            // Ignora il campo stesso e altri campi
+            if (mol._isQuantumField || mol === field) continue;
+            
+            // Calcola distanza dal campo
+            const distance = simulation.calculateDistance(field, mol);
+            
+            // Il campo ha effetto solo entro un certo raggio
+            if (distance < 5.0) {
+                // Calcola direzione dal campo alla molecola
+                const direction = [
+                    mol.position[0] - field.position[0],
+                    mol.position[1] - field.position[1],
+                    mol.position[2] - field.position[2]
+                ];
+                
+                // Normalizza
+                const dirNorm = Math.sqrt(
+                    direction[0]**2 + 
+                    direction[1]**2 + 
+                    direction[2]**2
+                );
+                
+                if (dirNorm > 0.001) {
+                    const normalizedDir = direction.map(d => d / dirNorm);
+                    
+                    // Calcola effetto oscillatorio
+                    const oscillation = Math.sin((now - field._creationTime) / 200);
+                    const fieldStrength = 0.02 * (1 - distance/5.0) * oscillation;
+                    
+                    // Applica forza oscillatoria alla molecola
+                    for (let i = 0; i < 3; i++) {
+                        mol.velocity[i] += normalizedDir[i] * fieldStrength;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Rimuovi campi scaduti
+    if (fieldsToRemove.length > 0) {
+        simulation.molecules = simulation.molecules.filter(mol => 
+            !fieldsToRemove.includes(mol));
+    }
+}
+
+// Fix for updatePhysics method
+EnhancedChemistry.prototype.updatePhysics = function(removedIndices, newMolecules) {
+    const moleculeCount = this.molecules.length;
+    const timeScale = this.rules.getConstant('time_scale');
+    const damping = this.rules.getConstant('damping');
+    const now = performance.now(); // Add this line to define 'now'
+    
+    // Pre-calcola forze
+    const forces = Array(moleculeCount).fill(0).map(() => [0, 0, 0]);
+    
+    // Calcola interazioni tra molecole
+    for (let i = 0; i < moleculeCount; i++) {
+        if (removedIndices.has(i)) continue;
+        const mol1 = this.molecules[i];
+        
+        // Movimento termico casuale
+        for (let axis = 0; axis < 3; axis++) {
+            mol1.velocity[axis] += (Math.random() - 0.5) * 0.01 * this.temperature;
+        }
+        
+        // Interazioni con altre molecole
+        for (let j = i + 1; j < moleculeCount; j++) {
+            if (removedIndices.has(j)) continue;
+            const mol2 = this.molecules[j];
+            
+            // Calcola distanza
+            const distance = this.calculateDistance(mol1, mol2);
+            
+            // Applica forze
+            const [force1, force2] = this.applyForces(mol1, mol2);
+            for (let k = 0; k < 3; k++) {
+                forces[i][k] += force1[k] * timeScale;
+                forces[j][k] += force2[k] * timeScale;
+            }
+            
+            // Verifica reazioni chimiche
+            if (distance < 1.0 + (mol1.mass + mol2.mass) * 0.1) {
+                if (this.shouldReact(mol1, mol2)) {
+                    const products = this.processReaction(mol1, mol2);
+                    if (products.length > 0) {
+                        newMolecules.push(...products);
+                        removedIndices.add(i);
+                        removedIndices.add(j);
+                        this.reactionCount++;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Applica forze e aggiorna posizioni
+    for (let i = 0; i < moleculeCount; i++) {
+        if (removedIndices.has(i)) continue;
+        const mol = this.molecules[i];
+        
+        // Aggiorna velocità con forze
+        for (let k = 0; k < 3; k++) {
+            mol.velocity[k] += forces[i][k] * 0.1;
+            mol.position[k] += mol.velocity[k] * timeScale;
+            mol.velocity[k] *= damping;
+        }
+        
+        // Verifica limiti
+        this.enforceBoundaries(mol);
+    }
+}
+
+// Fix for applyForces method
+EnhancedChemistry.prototype.applyForces = function(mol1, mol2) {
+    const now = performance.now(); // Add this line to define 'now'
+    
+    // Verifica periodo di raffreddamento per reazioni
+    const inCoolingPeriod = this.rules.isInCoolingPeriod && 
+                           (this.rules.isInCoolingPeriod(mol1, now) || 
+                           this.rules.isInCoolingPeriod(mol2, now));
+    
+    // Calcola vettore direzione
+    const direction = [
+        mol2.position[0] - mol1.position[0],
+        mol2.position[1] - mol1.position[1],
+        mol2.position[2] - mol1.position[2]
+    ];
+    
+    const distance = Math.sqrt(
+        direction[0] * direction[0] + 
+        direction[1] * direction[1] + 
+        direction[2] * direction[2]
+    );
+    
+    if (distance < 0.001) {
+        return [[0, 0, 0], [0, 0, 0]];
+    }
+    
+    // Normalizza direzione
+    const dirNorm = direction.map(d => d / distance);
+    
+    // Calcola forze nette
+    const force1 = [0, 0, 0];
+    const force2 = [0, 0, 0];
+    
+    // Applica regole fisiche
+    for (const rule of this.rules.interaction_rules) {
+        if (rule.condition(mol1.prime_factors, mol2.prime_factors)) {
+            let f;
+            if (rule.force_function.length === 4) {
+                // Forza con massa
+                f = rule.force_function(dirNorm, distance, mol1.mass, mol2.mass);
+            } else {
+                // Forza con carica
+                f = rule.force_function(dirNorm, distance, mol1.charge, mol2.charge);
+            }
+            
+            // Applica intensità regola
+            for (let i = 0; i < 3; i++) {
+                const scaledForce = f[i] * rule.strength;
+                force1[i] += scaledForce;
+                force2[i] -= scaledForce;
+            }
+        }
+    }
+    
+    // Aggiungi forza di repulsione familiare se necessario
+    if (this.rules.areRelated && this.rules.areRelated(mol1.id, mol2.id)) {
+        const repulsionFactor = this.rules.getFamilyRepulsionFactor && 
+                               this.rules.getFamilyRepulsionFactor(mol1.id, mol2.id, now);
+        
+        if (repulsionFactor > 0) {
+            const minDistance = this.rules.getConstant('min_distance');
+            const effectiveDistance = Math.max(distance, minDistance);
+            const repulsiveForce = dirNorm.map(
+                x => -x * repulsionFactor / (effectiveDistance ** 1.5)
+            );
+            
+            // Applica alla forza risultante
+            for (let i = 0; i < 3; i++) {
+                force1[i] += repulsiveForce[i];
+                force2[i] -= repulsiveForce[i];
+            }
+        }
+    }
+    
+    // Limita forza massima
+    const maxForce = this.rules.getConstant('max_force');
+    for (let i = 0; i < 3; i++) {
+        force1[i] = Math.max(-maxForce, Math.min(maxForce, force1[i]));
+        force2[i] = Math.max(-maxForce, Math.min(maxForce, force2[i]));
+    }
+    
+    return [force1, force2];
+};
+
+// Fix for shouldReact method
+EnhancedChemistry.prototype.shouldReact = function(mol1, mol2) {
+    // Verifica periodo di raffreddamento
+    const now = performance.now(); // Add this line to define 'now'
+    if (this.rules.isInCoolingPeriod && 
+       (this.rules.isInCoolingPeriod(mol1, now) || 
+        this.rules.isInCoolingPeriod(mol2, now))) {
+        return false;
+    }
+    
+    // Continua con la logica originale
+    const relativeSpeed = Math.sqrt(
+        Math.pow(mol1.velocity[0] - mol2.velocity[0], 2) +
+        Math.pow(mol1.velocity[1] - mol2.velocity[1], 2) +
+        Math.pow(mol1.velocity[2] - mol2.velocity[2], 2)
+    );
+    
+    const baseReactionProb = 0.1 * this.temperature * relativeSpeed;
+    const sizeFactor = 1.0 / (1.0 + Math.log(mol1.number + mol2.number));
+    
+    return Math.random() < baseReactionProb * sizeFactor;
+};
+
+// Estensione del metodo step di EnhancedChemistry per supportare campi quantistici
+const originalStep = EnhancedChemistry.prototype.step;
+EnhancedChemistry.prototype.step = function() {
+    // Esegui passo normale
+    originalStep.call(this);
+    
+    // Aggiorna campi quantistici
+    updateQuantumFields(this);
+    
+    // Periodicamente, puliamo le relazioni obsolete
+    if (Math.random() < 0.05) {
+        this.rules.cleanupOldRelations();
+    }
+};
+
+// Modifica processReaction per passare i parametri aggiuntivi alle funzioni di condizione
+EnhancedChemistry.prototype.processReaction = function(mol1, mol2) {
+    // Cerca regole di reazione applicabili
+    for (const rule of this.rules.reaction_rules) {
+        // Passa anche le molecole complete alla funzione di condizione
+        if (rule.condition(mol1.prime_factors, mol2.prime_factors, mol1, mol2)) {
+            if (Math.random() < rule.probability * this.temperature) {
+                // Applica la regola di reazione
+                const products = rule.effect(mol1, mol2);
+                
+                // Imposta tempo di reazione per effetto visivo
+                const now = performance.now();
+                products.forEach(p => p.setReactionTime(now));
+                
+                return products;
+            }
+        }
+    }
+    
+    return [];
+};
+
+// Aggiungi metodo per visualizzare le relazioni tra molecole (utile per debug)
+EnhancedChemistry.prototype.getRelationshipCount = function() {
+    let count = 0;
+    for (const [molId, relations] of this.rules.familyRegistry.entries()) {
+        count += relations.size;
+    }
+    return count / 2; // Dividiamo per 2 perché ogni relazione è contata due volte (bidirezionale)
+};

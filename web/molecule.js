@@ -86,7 +86,7 @@ export class PrimeMolecule {
         }
         
         return factors;
-    }
+    }    
 
     calculate_charge() {
         let charge = 0;
