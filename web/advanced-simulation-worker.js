@@ -1954,72 +1954,227 @@ return rules.areRelated(this.id, otherMolecule.id);
 // Extend the EnhancedChemistry class with improved worker control
 class ImprovedChemistry extends EnhancedChemistry {
     constructor(rules, size, moleculeCount, maxNumber) {
-      super(rules, size, moleculeCount, maxNumber);
-      this.isPaused = false;
-      
-      // Replace spatial grid with dynamic molecule-centric caching
-      this.spatialGrid = null; // Remove grid-based partitioning
-      this.moleculeCache = new MoleculeCentricCache(); // New cache system
-    }
-  
-    // Override step method to respect pause state
-    async step() {
-      if (this.isPaused) {
-        // Don't process physics when paused, but still send updates from main worker
-        if (!this.isSubWorker) {
-          sendUpdate();
-        }
-        return;
-      }
-  
-      const timeScale = this.rules.getConstant('time_scale');
-      this.accumulatedTime += timeScale;
-      
-      // Update temperature
-      this.temperature = 1.0 + 0.2 * Math.sin(performance.now() / 5000);
-      
-      // Arrays for efficient processing
-      const newMolecules = [];
-      const removedIndices = new Set();
-      
-      // Process physics using sub-workers if available
-      if (this.isMainWorker && this.subWorkers.length > 0) {
-        await this.distributeWorkToSubWorkers();
-      } else {
-        // Fallback to single-threaded processing
-        this.updatePhysics(removedIndices, newMolecules);
-      }
-      
-      // Filter removed molecules
-      if (removedIndices.size > 0) {
-        this.molecules = this.molecules.filter((_, i) => !removedIndices.has(i));
-      }
-      
-      // Add new molecules
-      for (const mol of newMolecules) {
-        mol.id = `new-${this.nextMoleculeId++}`;
-        this.molecules.push(mol);
-      }
-      
-      // Reset accumulated time
-      if (this.accumulatedTime >= 1.0) {
-        this.accumulatedTime = 0.0;
+        super(rules, size, moleculeCount, maxNumber);
+        this.isPaused = false;
         
-        // Periodically clean up caches
-        this.moleculeCache.cleanupStaleRelationships();
+        // Inizializza correttamente la moleculeCache
+        this.spatialGrid = null; // Rimuovi la grid-based partitioning
+        this.moleculeCache = new MoleculeCentricCache(); // Inizializza la nuova cache
+        
+        // Altre inizializzazioni
+        this.stablePositions = new Map();
+        this.positionAccumulators = new Map();
+        this.positionSampleCount = new Map();
+        this.updateInProgress = false;
+        this.pendingPositionUpdate = false;
       }
       
-      // Limit molecule count for performance
-      this.manageMoleculeCount();
-      
-      // Update quantum fields
-      updateQuantumFields(this);
-      
-      // Periodically clean up obsolete relationships
-      if (Math.random() < 0.05) {
-        this.rules.cleanupOldRelations && this.rules.cleanupOldRelations();
+      // Override del metodo step
+      async step() {
+        if (this.isPaused) {
+          if (!this.isSubWorker) {
+            sendUpdate();
+          }
+          return;
+        }
+    
+        // Imposta flag di aggiornamento in corso
+        this.updateInProgress = true;
+        
+        const timeScale = this.rules.getConstant('time_scale');
+        this.accumulatedTime += timeScale;
+        
+        // Aggiorna temperatura
+        this.temperature = 1.0 + 0.2 * Math.sin(performance.now() / 5000);
+        
+        // Arrays per elaborazione efficiente
+        const newMolecules = [];
+        const removedIndices = new Set();
+        
+        // Elabora la fisica usando sub-worker se disponibili
+        if (this.isMainWorker && this.subWorkers.length > 0) {
+          await this.distributeWorkToSubWorkers();
+        } else {
+          // Fallback a elaborazione single-thread
+          this.updatePhysics(removedIndices, newMolecules);
+        }
+        
+        // Filtra molecole rimosse
+        if (removedIndices.size > 0) {
+          this.molecules = this.molecules.filter((_, i) => !removedIndices.has(i));
+        }
+        
+        // Aggiungi nuove molecole
+        for (const mol of newMolecules) {
+          mol.id = `new-${this.nextMoleculeId++}`;
+          this.molecules.push(mol);
+        }
+        
+        // Reset tempo accumulato
+        if (this.accumulatedTime >= 1.0) {
+          this.accumulatedTime = 0.0;
+          this.moleculeCache.cleanupStaleRelationships();
+        }
+        
+        // Limita numero di molecole per performance
+        this.manageMoleculeCount();
+        
+        // Aggiorna campi quantici
+        updateQuantumFields(this);
+        
+        // Pulizia periodica relazioni obsolete
+        if (Math.random() < 0.05) {
+          this.rules.cleanupOldRelations && this.rules.cleanupOldRelations();
+        }
+        
+        // Accumula posizioni per tutte le molecole
+        for (const mol of this.molecules) {
+          this.accumulatePosition(mol);
+        }
+        
+        // Aggiornamento completato
+        this.updateInProgress = false;
+        
+        // Invia aggiornamento solo quando tutte le posizioni sono state accumulate
+        if (this.isMainWorker) {
+          if (this.pendingPositionUpdate) {
+            // Stabilizza le posizioni prima di inviare
+            this.stabilizePositions();
+            sendUpdate();
+            
+            // Reset flag e buffer
+            this.pendingPositionUpdate = false;
+            this.positionAccumulators.clear();
+            this.positionSampleCount.clear();
+          } else {
+            // Imposta flag per aggiornamento posizione al prossimo ciclo
+            this.pendingPositionUpdate = true;
+          }
+        }
       }
-    }
+      
+      // Accumula posizione di una molecola per una media stabile
+      accumulatePosition(molecule) {
+        const id = molecule.id;
+        
+        // Inizializza accumulatore se necessario
+        if (!this.positionAccumulators.has(id)) {
+          this.positionAccumulators.set(id, [0, 0, 0]);
+          this.positionSampleCount.set(id, 0);
+        }
+        
+        // Aggiungi posizione attuale all'accumulatore
+        const accumulator = this.positionAccumulators.get(id);
+        const count = this.positionSampleCount.get(id);
+        
+        for (let i = 0; i < 3; i++) {
+          accumulator[i] += molecule.position[i];
+        }
+        
+        this.positionSampleCount.set(id, count + 1);
+      }
+      
+      // Calcola posizioni stabili come media delle posizioni accumulate
+      stabilizePositions() {
+        this.stablePositions.clear();
+        
+        for (const mol of this.molecules) {
+          const id = mol.id;
+          
+          if (this.positionAccumulators.has(id) && this.positionSampleCount.has(id)) {
+            const accumulator = this.positionAccumulators.get(id);
+            const count = this.positionSampleCount.get(id);
+            
+            if (count > 0) {
+              // Calcola posizione media
+              const stablePosition = [
+                accumulator[0] / count,
+                accumulator[1] / count,
+                accumulator[2] / count
+              ];
+              
+              // Memorizza posizione stabile
+              this.stablePositions.set(id, stablePosition);
+              
+              // Aggiorna posizione della molecola con quella stabile
+              // (solo per la visualizzazione, non per i calcoli fisici)
+              const originalPosition = [...mol.position];
+              mol.position = stablePosition;
+              
+              // Preserva la vera posizione fisica in una proprietà separata
+              mol._physicsPosition = originalPosition;
+            }
+          }
+        }
+      }
+      
+      // Override di calculateDistance per usare posizioni fisiche reali
+      calculateDistance(mol1, mol2) {
+        // Usa _physicsPosition se disponibile, altrimenti usa position
+        const pos1 = mol1._physicsPosition || mol1.position;
+        const pos2 = mol2._physicsPosition || mol2.position;
+        
+        let sumSquared = 0;
+        for (let i = 0; i < 3; i++) {
+          const diff = pos2[i] - pos1[i];
+          sumSquared += diff * diff;
+        }
+        return Math.sqrt(sumSquared);
+      }
+      
+      // Override setTemperature per rispettare flag updateInProgress
+      setTemperature(value) {
+        this.temperature = value;
+        
+        // Se aggiornamento in corso, attendi
+        if (!this.isMainWorker || !this.updateInProgress) {
+          propagateTemperature(value);
+        }
+      }
+      
+      // Override setTimeScale per rispettare flag updateInProgress
+      setTimeScale(value) {
+        if (this.rules) {
+          this.rules.setConstant('time_scale', value);
+          
+          // Se aggiornamento in corso, attendi
+          if (!this.isMainWorker || !this.updateInProgress) {
+            propagateTimeScale(value);
+          }
+        }
+      }
+      
+      // Nuovo metodo per ripristinare le posizioni fisiche reali
+      restorePhysicsPositions() {
+        for (const mol of this.molecules) {
+          if (mol._physicsPosition) {
+            mol.position = [...mol._physicsPosition];
+            delete mol._physicsPosition;
+          }
+        }
+      }
+      
+      // Override di cleanup
+      cleanup() {
+        this.isPaused = false;
+        this.updateInProgress = false;
+        this.pendingPositionUpdate = false;
+        this.stablePositions.clear();
+        this.positionAccumulators.clear();
+        this.positionSampleCount.clear();
+        
+        // Cleanup resources
+        if (this.isMainWorker && this.subWorkers.length > 0) {
+          for (const subWorker of this.subWorkers) {
+            subWorker.worker.postMessage({type: 'cleanup'});
+            subWorker.worker.terminate();
+          }
+          this.subWorkers = [];
+        }
+        
+        this.molecules = [];
+        this.moleculeCache.clear();
+      }
   
     // Set pause state
     setPauseState(isPaused) {
@@ -2571,30 +2726,30 @@ class ImprovedChemistry extends EnhancedChemistry {
     }
   }
   
-  /**
-   * MoleculeCentricCache - New molecule-centric caching system
-   * Maintains relationships between molecules based on their proximity
-   * rather than spatial grid partitioning
-   */
-  class MoleculeCentricCache {
+/**
+ * MoleculeCentricCache - New molecule-centric caching system
+ * Maintains relationships between molecules based on their proximity
+ * rather than spatial grid partitioning
+ */
+class MoleculeCentricCache {
     constructor() {
-      // Map of molecule ID to its relationships
+      // Map di ID molecola alle sue relazioni
       this.moleculeRelationships = new Map();
       
-      // Relationship staleness threshold (ms)
+      // Soglia di obsolescenza relazioni (ms)
       this.stalenessThreshold = 5000;
       
-      // Maximum relationships per molecule
+      // Massimo numero di relazioni per molecola
       this.maxRelationshipsPerMolecule = 20;
     }
     
-    // Get all relationships for a molecule
+    // Restituisce tutte le relazioni per una molecola
     getRelationshipsForMolecule(molecule) {
       if (!molecule || !molecule.id) return [];
       return this.moleculeRelationships.get(molecule.id) || [];
     }
     
-    // Get all relationships for a list of molecules
+    // Restituisce tutte le relazioni per una lista di molecole
     getRelationshipsForMolecules(molecules) {
       const result = {};
       
@@ -2614,26 +2769,26 @@ class ImprovedChemistry extends EnhancedChemistry {
       return result;
     }
     
-    // Create a new relationship between molecules
+    // Crea una nuova relazione tra molecole
     createRelationship(mol1, mol2, distance, timestamp) {
       if (!mol1.id || !mol2.id || mol1.id === mol2.id) return;
       
-      // Check if relationship already exists
+      // Verifica se la relazione esiste già
       if (this.hasRelationship(mol1.id, mol2.id)) {
-        // Update existing relationship
+        // Aggiorna relazione esistente
         this.updateRelationship(mol1.id, mol2.id, distance, timestamp);
         return;
       }
       
-      // Create new relationships in both directions
+      // Crea nuove relazioni in entrambe le direzioni
       this._ensureRelationshipsList(mol1.id);
       this._ensureRelationshipsList(mol2.id);
       
-      // Check if we need to prune relationships
+      // Verifica se è necessario eliminare relazioni
       this._pruneRelationshipsIfNeeded(mol1.id);
       this._pruneRelationshipsIfNeeded(mol2.id);
       
-      // Create bidirectional relationship
+      // Crea relazione bidirezionale
       const rel1 = {
         otherId: mol2.id,
         distance: distance,
@@ -2650,7 +2805,7 @@ class ImprovedChemistry extends EnhancedChemistry {
       this.moleculeRelationships.get(mol2.id).push(rel2);
     }
     
-    // Check if a relationship exists
+    // Verifica se esiste una relazione
     hasRelationship(mol1Id, mol2Id) {
       if (!this.moleculeRelationships.has(mol1Id)) return false;
       
@@ -2659,11 +2814,11 @@ class ImprovedChemistry extends EnhancedChemistry {
       );
     }
     
-    // Update an existing relationship
+    // Aggiorna una relazione esistente
     updateRelationship(mol1Id, mol2Id, distance, timestamp) {
       if (!this.hasRelationship(mol1Id, mol2Id)) return;
       
-      // Update from mol1 to mol2
+      // Aggiorna da mol1 a mol2
       const rels1 = this.moleculeRelationships.get(mol1Id);
       const rel1Index = rels1.findIndex(rel => rel.otherId === mol2Id);
       
@@ -2672,7 +2827,7 @@ class ImprovedChemistry extends EnhancedChemistry {
         rels1[rel1Index].lastUpdated = timestamp;
       }
       
-      // Update from mol2 to mol1
+      // Aggiorna da mol2 a mol1
       if (this.moleculeRelationships.has(mol2Id)) {
         const rels2 = this.moleculeRelationships.get(mol2Id);
         const rel2Index = rels2.findIndex(rel => rel.otherId === mol1Id);
@@ -2684,16 +2839,16 @@ class ImprovedChemistry extends EnhancedChemistry {
       }
     }
     
-    // Remove a relationship
+    // Rimuove una relazione
     removeRelationship(mol1Id, mol2Id) {
-      // Remove from mol1 to mol2
+      // Rimuove da mol1 a mol2
       if (this.moleculeRelationships.has(mol1Id)) {
         const rels1 = this.moleculeRelationships.get(mol1Id);
         const filteredRels1 = rels1.filter(rel => rel.otherId !== mol2Id);
         this.moleculeRelationships.set(mol1Id, filteredRels1);
       }
       
-      // Remove from mol2 to mol1
+      // Rimuove da mol2 a mol1
       if (this.moleculeRelationships.has(mol2Id)) {
         const rels2 = this.moleculeRelationships.get(mol2Id);
         const filteredRels2 = rels2.filter(rel => rel.otherId !== mol1Id);
@@ -2701,15 +2856,15 @@ class ImprovedChemistry extends EnhancedChemistry {
       }
     }
     
-    // Remove all relationships for a molecule
+    // Rimuove tutte le relazioni per una molecola
     removeAllRelationshipsForMolecule(molId) {
       if (!this.moleculeRelationships.has(molId)) return;
       
-      // Get list of other molecules
+      // Ottieni lista delle altre molecole
       const relationships = this.moleculeRelationships.get(molId);
       const otherIds = relationships.map(rel => rel.otherId);
       
-      // Remove this molecule from all other molecules' relationships
+      // Rimuovi questa molecola dalle relazioni di tutte le altre molecole
       for (const otherId of otherIds) {
         if (this.moleculeRelationships.has(otherId)) {
           const otherRels = this.moleculeRelationships.get(otherId);
@@ -2718,11 +2873,11 @@ class ImprovedChemistry extends EnhancedChemistry {
         }
       }
       
-      // Remove this molecule's relationships
+      // Rimuovi le relazioni di questa molecola
       this.moleculeRelationships.delete(molId);
     }
     
-    // Get uncached molecules from a list
+    // Ottieni molecole senza cache da una lista
     getUncachedMolecules(molecules) {
       return molecules.filter(mol => 
         !mol.id || !this.moleculeRelationships.has(mol.id) || 
@@ -2730,23 +2885,23 @@ class ImprovedChemistry extends EnhancedChemistry {
       );
     }
     
-    // Clean up stale relationships
+    // Pulisci relazioni obsolete
     cleanupStaleRelationships() {
       const now = performance.now();
       
       for (const [molId, relationships] of this.moleculeRelationships.entries()) {
-        // Filter out stale relationships
+        // Filtra le relazioni obsolete
         const freshRelationships = relationships.filter(rel => 
           now - rel.lastUpdated < this.stalenessThreshold
         );
         
         if (freshRelationships.length !== relationships.length) {
-          // Update with only fresh relationships
+          // Aggiorna con le sole relazioni fresche
           this.moleculeRelationships.set(molId, freshRelationships);
         }
       }
       
-      // Remove empty relationship lists
+      // Rimuovi liste di relazioni vuote
       for (const [molId, relationships] of this.moleculeRelationships.entries()) {
         if (relationships.length === 0) {
           this.moleculeRelationships.delete(molId);
@@ -2754,28 +2909,28 @@ class ImprovedChemistry extends EnhancedChemistry {
       }
     }
     
-    // Clear all relationships
+    // Cancella tutte le relazioni
     clear() {
       this.moleculeRelationships.clear();
     }
     
-    // Helper to ensure a molecule has a relationships list
+    // Helper per assicurarsi che una molecola abbia una lista di relazioni
     _ensureRelationshipsList(molId) {
       if (!this.moleculeRelationships.has(molId)) {
         this.moleculeRelationships.set(molId, []);
       }
     }
     
-    // Helper to prune excess relationships
+    // Helper per potare relazioni in eccesso
     _pruneRelationshipsIfNeeded(molId) {
       if (!this.moleculeRelationships.has(molId)) return;
       
       const relationships = this.moleculeRelationships.get(molId);
       if (relationships.length >= this.maxRelationshipsPerMolecule) {
-        // Sort by recency (most recent first)
+        // Ordina per recenza (più recenti prima)
         relationships.sort((a, b) => b.lastUpdated - a.lastUpdated);
         
-        // Keep only the most recent relationships
+        // Mantieni solo le relazioni più recenti
         this.moleculeRelationships.set(
           molId, 
           relationships.slice(0, this.maxRelationshipsPerMolecule - 1)
@@ -3077,12 +3232,13 @@ class ImprovedChemistry extends EnhancedChemistry {
     }
   }
   
-  function sendUpdate() {
+  
+// Modifica alla funzione sendUpdate
+function sendUpdate() {
     try {
-      // Prepare data for sending
-      const moleculeData = getOptimizedMoleculeData();
+      // Prepara dati usando posizioni stabili quando disponibili
+      const moleculeData = getOptimizedMoleculeData(simulation.stablePositions);
       
-      // Include pause state in update
       postMessage({
         type: 'update',
         molecules: moleculeData,
@@ -3100,6 +3256,11 @@ class ImprovedChemistry extends EnhancedChemistry {
           lastProcessed: worker.lastProcessedMolecules
         }))
       });
+      
+      // Ripristina posizioni fisiche reali dopo l'invio dell'aggiornamento
+      if (simulation.stablePositions.size > 0) {
+        simulation.restorePhysicsPositions();
+      }
     } catch (error) {
       console.error(`Worker ${workerId}: error sending update`, error);
       postMessage({
@@ -3107,6 +3268,65 @@ class ImprovedChemistry extends EnhancedChemistry {
         message: `Error sending update: ${error.message}`,
         stack: error.stack
       });
+    }
+  }
+  
+  // Funzione aggiornata per utilizzare posizioni stabili
+  function getOptimizedMoleculeData(stablePositions) {
+    const currentMoleculeIds = new Set();
+    const result = [];
+    
+    for (const mol of simulation.molecules) {
+      const id = mol.id || `mol-${Math.random().toString(36).substring(2, 11)}`;
+      mol.id = id;
+      currentMoleculeIds.add(id);
+      
+      // Serializza utilizzando il serializzatore standard
+      const serialized = MoleculeSerializer.serialize(mol);
+      
+      // Se disponibile, usa la posizione stabile
+      if (stablePositions && stablePositions.has(id)) {
+        serialized.position = [...stablePositions.get(id)];
+      }
+      
+      result.push(serialized);
+    }
+    
+    // Calcola molecole rimosse
+    const removedIds = [...previousMoleculeIds].filter(id => !currentMoleculeIds.has(id));
+    
+    // Aggiorna set per il prossimo frame
+    previousMoleculeIds = currentMoleculeIds;
+    
+    return {
+      molecules: result,
+      removedIds: removedIds
+    };
+  }
+  
+  // Funzioni di supporto
+  
+  function propagateTemperature(value) {
+    // Propaga ai sub-worker
+    if (simulation.isMainWorker && simulation.subWorkers.length > 0) {
+      for (const subWorker of simulation.subWorkers) {
+        subWorker.worker.postMessage({
+          type: 'set_temperature',
+          value: value
+        });
+      }
+    }
+  }
+  
+  function propagateTimeScale(value) {
+    // Propaga ai sub-worker
+    if (simulation.isMainWorker && simulation.subWorkers.length > 0) {
+      for (const subWorker of simulation.subWorkers) {
+        subWorker.worker.postMessage({
+          type: 'set_timescale',
+          value: value
+        });
+      }
     }
   }
   
@@ -3118,33 +3338,6 @@ class ImprovedChemistry extends EnhancedChemistry {
       count += relationships.length;
     }
     return count;
-  }
-  
-  function getOptimizedMoleculeData() {
-    const currentMoleculeIds = new Set();
-    const result = [];
-    
-    // Serialize each molecule with all required properties
-    for (const mol of simulation.molecules) {
-      // Ensure each molecule has an ID
-      const id = mol.id || `mol-${Math.random().toString(36).substring(2, 11)}`;
-      mol.id = id;
-      currentMoleculeIds.add(id);
-      
-      // Use serialization helper to ensure all required properties are included
-      result.push(MoleculeSerializer.serialize(mol));
-    }
-    
-    // Calculate removed molecules
-    const removedIds = [...previousMoleculeIds].filter(id => !currentMoleculeIds.has(id));
-    
-    // Update set for next frame
-    previousMoleculeIds = currentMoleculeIds;
-    
-    return {
-      molecules: result,
-      removedIds: removedIds
-    };
   }
   
   function cleanupResources() {
