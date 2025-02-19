@@ -14,7 +14,7 @@ let selectedMolecule = null;
 
 
 function init() {
-    const spaceDimension = 50
+    const spaceDimension = 10
 
     // Scene setup
     scene = new THREE.Scene();
