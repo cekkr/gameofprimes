@@ -30,17 +30,17 @@ class SimulationRules {
         this.reaction_rules = [];
         this.constants = {
             'G': 0.1,           // Costante gravitazionale (ridotta per renderla più debole)
-            'k': 2.0,            // Costante elettrostatica
+            'k': 1.0,            // Costante elettrostatica
             'min_distance': 0.05, // Distanza minima per evitare singolarità
-            'max_force': 1.0,   // Forza massima applicabile
-            'damping': 0.1,     // Smorzamento
+            'max_force': 100.0,   // Forza massima applicabile
+            'damping': 0.99,     // Smorzamento
             'temperature_factor': 1.0,
-            'quantum_strength': 0.2,
+            'quantum_strength': 0.5,
             'time_scale': 0.8,   // Rallentato per gravità più graduale
             'repulsion_decay_time': 1000, // Tempo in ms per cui le particelle restano ripulsive
             'cooling_period': 100, // Tempo in ms durante il quale le molecole non reagiscono dopo una reazione
             'entropy_factor': 0.3, // Fattore di entropia per prevenire il collasso gravitazionale
-            'family_repulsion': 1.0, // Intensità della repulsione tra "parenti"
+            'family_repulsion': 2.0, // Intensità della repulsione tra "parenti"
             'random_interaction_probability': 0.1 // Probabilità di considerare molecole casuali nel caching
         };
         
