@@ -482,8 +482,19 @@ function init() {
     // Imposta lo stato iniziale dei controlli
     updateControlsState();
 
-    // Inizia l'animazione
-    fixedAnimate();
+    // Applica le correzioni di emergenza
+    ensureGlobalVariables();
+    
+    // Ricollegamento controlli
+    setTimeout(connectAllControlEvents, 200);
+    
+    // Sostituisci animate
+    window.requestAnimationFrame = window.requestAnimationFrame || 
+                                 window.mozRequestAnimationFrame ||
+                                 window.webkitRequestAnimationFrame || 
+                                 window.msRequestAnimationFrame;
+    
+   requestAnimationFrame(fixedAnimate);
 }
 
 // ===== 2. RIMOZIONE EFFETTI VISIVI SUPERFLUI =====
@@ -2665,27 +2676,6 @@ function fixedAnimate(timestamp) {
         window.renderer.render(window.scene, window.camera);
     }
 }
-
-// 6. FUNZIONE PER INTERCETTARE E SOVRASCRIVERE L'INIT ORIGINALE
-let originalInit = init;
-init = function() {
-    console.log("CORRECTING INIT FUNCTION");
-    // Chiama l'init originale
-    originalInit();
-    
-    // Applica le correzioni di emergenza
-    ensureGlobalVariables();
-    
-    // Ricollegamento controlli
-    setTimeout(connectAllControlEvents, 200);
-    
-    // Sostituisci animate
-    window.requestAnimationFrame = window.requestAnimationFrame || 
-                                 window.mozRequestAnimationFrame ||
-                                 window.webkitRequestAnimationFrame || 
-                                 window.msRequestAnimationFrame;
-    requestAnimationFrame(fixedAnimate);
-};
 
 // Assicura che questo script venga eseguito all'avvio della pagina
 document.addEventListener('DOMContentLoaded', function() {
