@@ -292,7 +292,7 @@ class EnhancedChemistry {
     }
 
     /**
-     * Gestisce messaggi dai sub-worker
+     * Gestisce messaggi dai sub-worker in modo migliorato
      */
     handleSubWorkerMessage(workerIndex, event) {
         const subWorker = this.subWorkers[workerIndex - 1];
@@ -304,10 +304,15 @@ class EnhancedChemistry {
                 break;
 
             case 'chunk_processed':
-                // Unisce risultati dal sub-worker
-                this.mergeProcessedChunk(event.data.results);
+                // Unisce risultati dal sub-worker con risoluzione dei conflitti
+                this.mergeProcessedChunkWithConflictResolution(
+                    event.data.results,
+                    event.data.processedMoleculeIds || [],
+                    event.data.timestamp || performance.now()
+                );
                 subWorker.busy = false;
                 subWorker.lastProcessedMolecules = event.data.processedCount;
+                subWorker.lastProcessTime = performance.now();
                 break;
 
             case 'reaction_occurred':
@@ -319,6 +324,186 @@ class EnhancedChemistry {
                 console.error(`Errore in sub-worker ${workerIndex}:`, event.data.message);
                 subWorker.busy = false;
                 break;
+        }
+    }
+
+    /**
+     * Unisce risultati elaborati dal sub-worker con gestione conflitti
+     * @param {Object} results - Risultati dal worker
+     * @param {Array} processedIds - Array di ID molecole effettivamente elaborate dal worker 
+     * @param {number} timestamp - Timestamp di elaborazione
+     */
+    mergeProcessedChunkWithConflictResolution(results, processedIds, timestamp) {
+        if (!results) return;
+        
+        // Converti array in Set per ricerca efficiente
+        const processedMoleculeIds = new Set(processedIds);
+        
+        // Traccia molecole aggiornate da altri worker di recente
+        const recentlyUpdated = new Map();
+        
+        // Aggiorna stati molecole con risoluzione conflitti
+        if (results.moleculeUpdates && results.moleculeUpdates.length > 0) {
+            for (const update of results.moleculeUpdates) {
+                if (!update || !update.id) continue;
+                
+                const molecule = this.molecules.find(m => m.id === update.id);
+                if (!molecule) continue;
+                
+                // Traccia ultimo aggiornamento per questa molecola
+                if (!molecule._lastUpdateInfo) {
+                    molecule._lastUpdateInfo = {
+                        timestamp: 0,
+                        workerUpdates: new Map(),
+                        mergeCount: 0
+                    };
+                }
+                
+                const updateInfo = molecule._lastUpdateInfo;
+                
+                // Gestione differente in base al tipo di proprietà della molecola
+                if (processedMoleculeIds.has(update.id)) {
+                    // 1. Questa molecola è stata direttamente elaborata da questo worker
+                    
+                    // Aggiorna informazioni di elaborazione
+                    updateInfo.timestamp = timestamp;
+                    updateInfo.workerUpdates.set('position', update.position);
+                    updateInfo.workerUpdates.set('velocity', update.velocity);
+                    
+                    // Aggiorna proprietà direttamente
+                    MoleculeSerializer.updateMoleculeProperties(molecule, update);
+                    
+                } else {
+                    // 2. Questa molecola è stata indirettamente influenzata (parte di interazione)
+                    
+                    // Se è stata aggiornata recentemente da un altro worker, bisogna fare la media
+                    const timeSinceUpdate = timestamp - updateInfo.timestamp;
+                    if (timeSinceUpdate < 50) { // 50ms è la soglia per considerare aggiornamenti concorrenti
+                        recentlyUpdated.set(update.id, true);
+                        
+                        // Fai la media delle posizioni e velocità
+                        const currentPos = molecule.position;
+                        const newPos = update.position;
+                        const mergedPos = [0, 0, 0];
+                        
+                        const currentVel = molecule.velocity;
+                        const newVel = update.velocity;
+                        const mergedVel = [0, 0, 0];
+                        
+                        // Media pesata: i nuovi valori contribuiscono del 40%
+                        const currentWeight = 0.6;
+                        const newWeight = 0.4;
+                        
+                        for (let i = 0; i < 3; i++) {
+                            mergedPos[i] = currentPos[i] * currentWeight + newPos[i] * newWeight;
+                            mergedVel[i] = currentVel[i] * currentWeight + newVel[i] * newWeight;
+                        }
+                        
+                        // Aggiorna con i valori mediati
+                        update.position = mergedPos;
+                        update.velocity = mergedVel;
+                        
+                        // Incrementa conteggio fusioni
+                        updateInfo.mergeCount++;
+                        
+                    } else {
+                        // Primo aggiornamento o abbastanza vecchio da essere sovrascritto
+                        updateInfo.timestamp = timestamp;
+                        updateInfo.mergeCount = 0;
+                    }
+                    
+                    // Aggiorna proprietà
+                    MoleculeSerializer.updateMoleculeProperties(molecule, update);
+                }
+            }
+        }
+
+        // Aggiungi eventuali nuove molecole da reazioni
+        if (results.newMolecules && results.newMolecules.length > 0) {
+            for (const molData of results.newMolecules) {
+                // Verifica che non sia già stata aggiunta da un altro worker
+                const existingMolecule = this.molecules.find(m => 
+                    m.parentIds && 
+                    molData.parentIds && 
+                    m.parentIds.length === molData.parentIds.length && 
+                    m.parentIds.every(id => molData.parentIds.includes(id)) &&
+                    m.reactionType === molData.reactionType &&
+                    Math.abs(performance.now() - m.lastReactionTime) < 100
+                );
+                
+                if (!existingMolecule) {
+                    // Crea nuova molecola usando helper serializzazione
+                    const newMol = MoleculeSerializer.deserialize(molData, PrimeMolecule);
+                    newMol.id = `main-${this.nextMoleculeId++}`;
+                    this.molecules.push(newMol);
+                }
+            }
+        }
+
+        // Aggiorna conteggio reazioni
+        if (results.reactionCount) {
+            this.reactionCount += results.reactionCount;
+        }
+
+        // Integra relazioni aggiornate
+        if (results.updatedRelationships) {
+            this.importRelationshipsWithConflictResolution(
+                results.updatedRelationships, 
+                processedMoleculeIds,
+                recentlyUpdated
+            );
+        }
+    }
+
+    /**
+     * Importa relazioni aggiornate dai sub-worker con gestione conflitti
+     * @param {Object} updatedRelationships - Relazioni da importare
+     * @param {Set} processedMoleculeIds - Set di ID molecole elaborate direttamente
+     * @param {Map} recentlyUpdated - Mappa di molecole recentemente aggiornate
+     */
+    importRelationshipsWithConflictResolution(updatedRelationships, processedMoleculeIds, recentlyUpdated) {
+        for (const [molId, relationships] of Object.entries(updatedRelationships)) {
+            for (const rel of relationships) {
+                const mol = this.molecules.find(m => m.id === molId);
+                const otherMol = this.molecules.find(m => m.id === rel.otherId);
+
+                if (!mol || !otherMol) continue;
+                
+                // Determina se questa relazione deve avere precedenza
+                const isDirectlyProcessed = processedMoleculeIds.has(molId) && 
+                                            processedMoleculeIds.has(rel.otherId);
+                
+                // Verifica se entrambe le molecole sono state recentemente aggiornate
+                const bothRecentlyUpdated = recentlyUpdated.has(molId) && recentlyUpdated.has(rel.otherId);
+                
+                // Se è una relazione elaborata direttamente o non ci sono conflitti recenti
+                if (isDirectlyProcessed || !bothRecentlyUpdated) {
+                    this.moleculeCache.createRelationship(
+                        mol,
+                        otherMol,
+                        rel.distance,
+                        rel.lastUpdated || performance.now()
+                    );
+                } else {
+                    // Trova la relazione esistente, se presente
+                    const existingRel = this.moleculeCache.getRelationshipsForMolecule(mol)
+                        .find(r => r.otherId === otherMol.id);
+                    
+                    if (existingRel) {
+                        // Media le distanze se la relazione esiste già
+                        const avgDistance = (existingRel.distance + rel.distance) / 2;
+                        this.moleculeCache.updateRelationship(
+                            mol.id, 
+                            otherMol.id, 
+                            avgDistance, 
+                            Math.max(existingRel.lastUpdated, rel.lastUpdated || performance.now())
+                        );
+                    } else {
+                        // Crea nuova relazione se non esiste
+                        this.moleculeCache.createRelationship(mol, otherMol, rel.distance, rel.lastUpdated || performance.now());
+                    }
+                }
+            }
         }
     }
 
@@ -2931,16 +3116,12 @@ function handleOptimizedProcessChunk(message) {
             moleculeObjs, 
             removedIndices, 
             newMolecules, 
-            reactionCount
+            reactionCount,
+            adaptedPlan
         );
         
         // Invia risultati
-        postMessage({
-            type: 'chunk_processed',
-            workerId: workerId,
-            processedCount: interactionPlan.length,
-            results: results
-        });
+        sendProcessedChunkResult(results, interactionPlan.length);
         
     } catch (error) {
         reportProcessingError(error);
@@ -3141,12 +3322,7 @@ function handleProcessChunk(message) {
         };
 
         // Invia risultati
-        postMessage({
-            type: 'chunk_processed',
-            workerId: workerId,
-            processedCount: molecules.length,
-            results: results
-        });
+        sendProcessedChunkResult(results, molecules.length);
 
     } catch (error) {
         reportProcessingError(error);
@@ -3157,17 +3333,12 @@ function handleProcessChunk(message) {
  * Invia risultato vuoto per chunk
  */
 function sendEmptyChunkResult() {
-    postMessage({
-        type: 'chunk_processed',
-        workerId: workerId,
-        processedCount: 0,
-        results: {
-            moleculeUpdates: [],
-            newMolecules: [],
-            reactionCount: 0,
-            updatedRelationships: {}
-        }
-    });
+    sendProcessedChunkResult( {
+        moleculeUpdates: [],
+        newMolecules: [],
+        reactionCount: 0,
+        updatedRelationships: {}
+    }, 0)
 }
 
 /**
@@ -3254,10 +3425,17 @@ function adaptInteractionPlan(plan, molecules, indices) {
  * @param {Set} removedIndices - Set per indici rimossi
  * @param {Array} newMolecules - Array per nuove molecole
  */
+/**
+ * Processa le interazioni secondo il piano ottimizzato
+ * e traccia quali molecole sono state elaborate direttamente
+ */
 function processInteractionPlan(molecules, plan, removedIndices, newMolecules) {
     const timeScale = simulation.rules.getConstant('time_scale');
     const damping = simulation.rules.getConstant('damping');
     const now = performance.now();
+    
+    // Set per tracciare molecole elaborate direttamente
+    const directlyProcessedIds = new Set();
     
     // Pre-calcola forze per ogni molecola
     const forces = new Map();
@@ -3272,6 +3450,10 @@ function processInteractionPlan(molecules, plan, removedIndices, newMolecules) {
         if (!mol1 || !mol2 || removedIndices.has(mol1.id) || removedIndices.has(mol2.id)) {
             continue;
         }
+        
+        // Traccia molecole elaborate direttamente
+        directlyProcessedIds.add(mol1.id);
+        directlyProcessedIds.add(mol2.id);
         
         // Calcola distanza attuale
         const currentDistance = simulation.calculateDistance(mol1, mol2);
@@ -3301,6 +3483,57 @@ function processInteractionPlan(molecules, plan, removedIndices, newMolecules) {
     
     // Applica forze e aggiorna posizioni
     applyForcesAndMove(molecules, forces, timeScale, damping);
+    
+    // Restituisci anche le molecole elaborate direttamente
+    return [...directlyProcessedIds];
+}
+
+/**
+ * Prepara i risultati dell'elaborazione con informazioni sulle molecole elaborate direttamente
+ */
+function prepareProcessedResults(molecules, removedIds, newMolecules, initialReactionCount, plan) {
+    // Ottieni molecole elaborate direttamente
+    const processedMoleculeIds = processInteractionPlan(molecules, plan, removedIds, newMolecules);
+    
+    return {
+        // Aggiornamenti molecole
+        moleculeUpdates: molecules
+            .filter(mol => !removedIds.has(mol.id))
+            .map(mol => MoleculeSerializer.serialize(mol)),
+            
+        // Nuove molecole create
+        newMolecules: newMolecules.map(mol => 
+            MoleculeSerializer.serialize(mol)
+        ),
+        
+        // Numero reazioni avvenute
+        reactionCount: simulation.reactionCount - initialReactionCount,
+        
+        // Aggiornamenti relazioni
+        updatedRelationships: simulation.moleculeCache.getRelationshipsForMolecules(
+            molecules.filter(mol => !removedIds.has(mol.id))
+        ),
+        
+        // Lista di ID molecole elaborate direttamente
+        processedMoleculeIds: processedMoleculeIds,
+        
+        // Timestamp elaborazione
+        timestamp: performance.now()
+    };
+}
+
+/**
+ * Invia risultati al worker principale con informazioni migliorate
+ */
+function sendProcessedChunkResult(results, processedCount) {
+    postMessage({
+        type: 'chunk_processed',
+        workerId: workerId,
+        processedCount: processedCount,
+        processedMoleculeIds: results.processedMoleculeIds || [],
+        timestamp: results.timestamp || performance.now(),
+        results: results
+    });
 }
 
 /**
@@ -3363,36 +3596,6 @@ function applyForcesAndMove(molecules, forces, timeScale, damping) {
         // Verifica confini
         simulation.enforceBoundaries(mol);
     }
-}
-
-/**
- * Prepara i risultati dell'elaborazione
- * @param {Array} molecules - Molecole processate
- * @param {Set} removedIds - ID molecole rimosse
- * @param {Array} newMolecules - Nuove molecole create
- * @param {number} initialReactionCount - Conteggio reazioni iniziale
- * @returns {Object} Risultati elaborazione
- */
-function prepareProcessedResults(molecules, removedIds, newMolecules, initialReactionCount) {
-    return {
-        // Aggiornamenti molecole
-        moleculeUpdates: molecules
-            .filter(mol => !removedIds.has(mol.id))
-            .map(mol => MoleculeSerializer.serialize(mol)),
-            
-        // Nuove molecole create
-        newMolecules: newMolecules.map(mol => 
-            MoleculeSerializer.serialize(mol)
-        ),
-        
-        // Numero reazioni avvenute
-        reactionCount: simulation.reactionCount - initialReactionCount,
-        
-        // Aggiornamenti relazioni
-        updatedRelationships: simulation.moleculeCache.getRelationshipsForMolecules(
-            molecules.filter(mol => !removedIds.has(mol.id))
-        )
-    };
 }
 
 /**
