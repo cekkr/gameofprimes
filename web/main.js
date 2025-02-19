@@ -14,7 +14,7 @@ let selectedMolecule = null;
 
 
 function init() {
-    const simulationSize = 25
+    const simulationSize = 20
 
     // Scene setup
     scene = new THREE.Scene();
@@ -58,8 +58,8 @@ function init() {
      simulationWorker.postMessage({
         type: 'init',
         size: simulationSize,
-        moleculeCount: 300,
-        maxNumber: 100,
+        moleculeCount: 400,
+        maxNumber: 1000,
         timeScale: 0.1, // Send timeScale
     });
 
