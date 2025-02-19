@@ -14,12 +14,12 @@ let selectedMolecule = null;
 
 
 function init() {
-    const simulationSize = 20
+    const spaceDimension = 50
 
     // Scene setup
     scene = new THREE.Scene();
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.z = simulationSize * 1.5;
+    camera.position.z = spaceDimension;
 
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -42,7 +42,7 @@ function init() {
     scene.add(axesHelper);
 
     // Boundary box
-    const boxSize = simulationSize; // Same as Python simulation size
+    const boxSize = spaceDimension; // Same as Python simulation size
     const boxGeometry = new THREE.BoxGeometry(boxSize, boxSize, boxSize);
     const wireframe = new THREE.WireframeGeometry(boxGeometry);
     const line = new THREE.LineSegments(wireframe);
@@ -57,10 +57,10 @@ function init() {
     // Initial simulation setup (send parameters to worker)
      simulationWorker.postMessage({
         type: 'init',
-        size: simulationSize,
-        moleculeCount: 300,
-        maxNumber: 200,
-        timeScale: 0.25, // Send timeScale
+        size: spaceDimension,
+        moleculeCount: 10*spaceDimension,
+        maxNumber: 1000,
+        timeScale: 0.1, // Send timeScale
     });
 
 
@@ -85,14 +85,18 @@ function handleWorkerMessage(event) {
 function updateMoleculeMeshes() {
     //console.log("Updating molecule meshes. simulationData:", simulationData); // Debugging
 
-    // Remove old molecules
+    // Remove old molecules AND halos
     molecules.forEach(molecule => {
         scene.remove(molecule);
+        if (molecule.userData.halo) {
+            scene.remove(molecule.userData.halo);
+        }
     });
     molecules = []; // Clear the array
 
     // Create/update molecules based on simulationData
     simulationData.molecules.forEach(molData => {
+       // console.log("Processing molecule data:", molData); // Debugging
         const geometry = new THREE.SphereGeometry(0.2 + 0.1 * Math.log2(molData.number), 32, 16);
         const material = new THREE.MeshPhongMaterial({ color: new THREE.Color(...molData.color) });
         const sphere = new THREE.Mesh(geometry, material);
@@ -119,6 +123,27 @@ function updateMoleculeMeshes() {
           const arrowHelper = new THREE.ArrowHelper(dir.normalize(), origin, length, hex);
           scene.add(arrowHelper);
           molecules.push(arrowHelper);
+        }
+
+        // Add Halo (if recently reacted)
+        if (molData.lastReactionTime > 0) {
+            const haloColor = new THREE.Color(...molData.color);
+            const timeSinceReaction = performance.now() - molData.lastReactionTime;
+            const alpha = Math.max(0, 1 - timeSinceReaction / 1000); // Fade out over 1 second
+
+            if (alpha > 0) {  //Only add if visible
+                const haloGeometry = new THREE.SphereGeometry(sphere.geometry.parameters.radius * (1.5 + 0.5*alpha), 32, 16); // Larger
+                const haloMaterial = new THREE.MeshBasicMaterial({
+                    color: haloColor,
+                    transparent: true,
+                    opacity: alpha,
+                });
+                const halo = new THREE.Mesh(haloGeometry, haloMaterial);
+                halo.position.copy(sphere.position);
+                scene.add(halo);
+                sphere.userData.halo = halo; // Store halo with the molecule
+                molecules.push(halo)
+            }
         }
 
     });
@@ -189,10 +214,16 @@ function onClick(event) {
     raycaster.setFromCamera(mouse, camera);
     const intersects = raycaster.intersectObjects(molecules.filter(obj => obj instanceof THREE.Mesh));
 
-    if (intersects.length> 0) {
+    if (intersects.length > 0) {
         // Get the closest intersection (if multiple)
         const closestIntersection = intersects[0];
-        selectedMolecule = closestIntersection.object.userData.moleculeData;
+		//select only molecules
+		let molIntersected = closestIntersection.object;
+		if (molIntersected.userData.halo) {
+			molIntersected = molecules.find( (mol) => mol.userData.halo == molIntersected );
+		}
+
+        selectedMolecule = molIntersected.userData.moleculeData;
 
         // Display molecule info
         moleculeInfoDiv.style.display = 'block';

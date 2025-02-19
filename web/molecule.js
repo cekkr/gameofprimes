@@ -3,21 +3,21 @@ export class PrimeMolecule {
     constructor(number, position) {
         this.number = number;
         this.position = position;
-        this.velocity = [0, 0, 0];
+        this.velocity = [0, 0, 0]; // Initialized to zero, will be set in PrimeChemistry
         this.acceleration = [0, 0, 0];
         this.prime_factors = this.factorize(number);
         this.mass = Math.log2(number) * 2;
         this.charge = this.calculate_charge();
         this.color = this.generate_color();
+        this.lastReactionTime = -Infinity; // For halo effect
 
-        // Add angular velocity
+        // Ensure angular velocity is initialized here
         this.angularVelocity = [
-            (Math.random() - 0.5) * 0.2,  // Adjust the range as needed
+            (Math.random() - 0.5) * 0.2,  // Adjust range as needed
             (Math.random() - 0.5) * 0.2,
             (Math.random() - 0.5) * 0.2
         ];
     }
-
 
     factorize(n) {
         const factors = {};
@@ -53,47 +53,64 @@ export class PrimeMolecule {
         return charge / (1 + Math.log(this.number));
     }
 
-    generate_color() {
+   generate_color() {
         if (Object.keys(this.prime_factors).length === 0) {
-            return [0.5, 0.5, 0.5];
+            return [0.5, 0.5, 0.5]; // Gray for 1
         }
 
-        const color = [0, 0, 0];
-        const maxPrime = Math.max(...Object.keys(this.prime_factors).map(Number)); // Convert to numbers
+        let h = 0;
+        let s = 0;
+        let v = 0;
 
-        for (const prime in this.prime_factors) {
+        const primes = Object.keys(this.prime_factors).map(Number).sort((a, b) => a - b); // Sorted primes
+        for (let i = 0; i < primes.length; i++) {
+            const prime = primes[i];
             const count = this.prime_factors[prime];
-            const hue = (prime * 0.618033988749895) % 1.0;
-            let h = hue * 6.0;
-            const c = count / (1 + Math.log(maxPrime));
-            const x = c * (1 - Math.abs((h % 2) - 1));
 
-            let rgb;
-            if (0 <= h && h < 1) {
-                rgb = [c, x, 0];
-            } else if (1 <= h && h < 2) {
-                rgb = [x, c, 0];
-            } else if (2 <= h && h < 3) {
-                rgb = [0, c, x];
-            } else if (3 <= h && h < 4) {
-                rgb = [0, x, c];
-            } else if (4 <= h && h < 5) {
-                rgb = [x, 0, c];
-            } else {
-                rgb = [c, 0, x];
-            }
+            // Use golden ratio for hue, but offset by index to further differentiate
+            h += (0.618033988749895 * prime) + (i * 0.1);
+            h %= 1; // Keep hue within 0-1
 
-            color[0] += rgb[0];
-            color[1] += rgb[1];
-            color[2] += rgb[2];
+            s += count / (1 + Math.log(Math.max(...primes))); // Saturation based on count
+            v += 1 / (1 + Math.log(prime));  // Value based on prime
         }
+         s = Math.min(1, s); //Ensure s and v stays between 0 and 1
+         v = Math.min(1,v);
 
-        // Normalize and make more vivid
-        for (let i = 0; i < 3; i++) {
-            color[i] = Math.min(Math.max(color[i], 0), 1); // Clip
-            color[i] = color[i] * 0.7 + 0.3; // Vividness
+        // Convert HSV to RGB
+        let r, g, b;
+        const i = Math.floor(h * 6);
+        const f = h * 6 - i;
+        const p = v * (1 - s);
+        const q = v * (1 - s * f);
+        const t = v * (1 - s * (1 - f));
+
+        switch (i % 6) {
+            case 0: r = v, g = t, b = p; break;
+            case 1: r = q, g = v, b = p; break;
+            case 2: r = p, g = v, b = t; break;
+            case 3: r = p, g = q, b = v; break;
+            case 4: r = t, g = p, b = v; break;
+            case 5: r = v, g = p, b = q; break;
         }
+        return [r, g, b];
+    }
+    setReactionTime(time) {
+        this.lastReactionTime = time;
+    }
 
-        return color;
+    getHaloColor() {
+        //  alpha based on time since last reaction
+        const timeSinceReaction = performance.now() - this.lastReactionTime;
+        const alpha = Math.max(0, 1 - timeSinceReaction / 1000); // Fade out over 1 second
+        return [...this.color, alpha]; // Return color with alpha
+    }
+
+    getHaloSize() {
+        const timeSinceReaction = performance.now() - this.lastReactionTime;
+        const size = 0.4 + 0.1 * Math.log2(this.number)
+        const factor = Math.max(0, 1 - timeSinceReaction/500); // Shrink
+        return size * (1 + factor);
+
     }
 }

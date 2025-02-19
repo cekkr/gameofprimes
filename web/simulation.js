@@ -25,6 +25,8 @@ onmessage = function(event) {
                 mass: mol.mass,
                 charge: mol.charge,
                 color: mol.color,
+                angularVelocity: mol.angularVelocity, // Add this line
+                lastReactionTime: mol.lastReactionTime,
             })),
             temperature: simulation.temperature,
         });
@@ -45,6 +47,8 @@ onmessage = function(event) {
                 mass: mol.mass,
                 charge: mol.charge,
                 color: mol.color,
+                angularVelocity: mol.angularVelocity, // Add this line
+                lastReactionTime: mol.lastReactionTime,
             })),
             temperature: simulation.temperature, // Send temperature
         });
@@ -74,7 +78,7 @@ class PrimeChemistry {
             const number = Math.floor(Math.random() * 99) + 2;
             const mol = new PrimeMolecule(number, pos);
 
-            // Add initial random velocity
+            // Set RANDOM INITIAL VELOCITY here:
             mol.velocity = [
                 (Math.random() - 0.5) * 0.5, // Adjust initial velocity range
                 (Math.random() - 0.5) * 0.5,
@@ -137,6 +141,10 @@ class PrimeChemistry {
                         newMolecules.push(...reactionProducts);
                         removedMolecules.add(i);
                         removedMolecules.add(j);
+                        // Set reaction time for halo effect
+                        const currentTime = performance.now();
+                        reactionProducts.forEach(mol => mol.setReactionTime(currentTime));
+
                         break; // Exit inner loop after reaction
                     }
 
@@ -179,10 +187,11 @@ class PrimeChemistry {
             }
         }
 
-        // Update molecule list (efficient filtering)
+         // Update molecule list (efficient filtering)
         this.molecules = this.molecules.filter((_, i) => !removedMolecules.has(i)).concat(newMolecules);
 
-        if (this.molecules.length > 500 && false) { // just for debugging
+        // TEMPORARY LIMIT - REMOVE THIS LATER
+        if (this.molecules.length > 500) {
             this.molecules = this.molecules.slice(0, 500);
         }
     }
