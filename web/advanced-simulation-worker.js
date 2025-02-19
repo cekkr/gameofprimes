@@ -2243,6 +2243,7 @@ class MoleculeInteractionManager {
     
     /**
      * Divide il piano di lavoro in lotti bilanciati per elaborazione parallela
+     * Corretto per garantire che ciascuna interazione sia assegnata a una sola partizione
      */
     partitionWorkPlan(workPlan, workerCount) {
         if (workPlan.length === 0 || workerCount <= 1) {
@@ -2253,13 +2254,20 @@ class MoleculeInteractionManager {
         const partitionCount = Math.min(workerCount, Math.ceil(workPlan.length / 10));
         const partitions = Array(partitionCount).fill().map(() => []);
         
-        // Distribuisci il lavoro con metodo "round-robin" pesato
-        // Le coppie sono già ordinate per priorità, quindi le prime
-        // sono distribuite prima garantendo bilanciamento del carico
-        workPlan.forEach((workItem, index) => {
-            const partitionIndex = index % partitionCount;
-            partitions[partitionIndex].push(workItem);
-        });
+        // Distribuisci in modo che ogni partizione abbia elementi unici
+        // Ogni elemento del workPlan va in una sola partizione
+        for (let i = 0; i < workPlan.length; i++) {
+            // Distribuisci in modo bilanciato tra le partizioni
+            const partitionIndex = Math.floor(i / Math.ceil(workPlan.length / partitionCount));
+            
+            // Assicurati di non superare il numero di partizioni
+            if (partitionIndex < partitionCount) {
+                partitions[partitionIndex].push(workPlan[i]);
+            } else {
+                // Nel caso in cui ci siano più elementi di quanti previsti, aggiungi all'ultima partizione
+                partitions[partitionCount - 1].push(workPlan[i]);
+            }
+        }
         
         return partitions;
     }
@@ -2294,7 +2302,123 @@ class MoleculeInteractionManager {
         
         return [...indices].sort((a, b) => a - b);
     }
+
+    /**
+     * Genera un piano di distribuzione del lavoro basato su interazioni prioritarie
+     * @param {Array} molecules - Tutte le molecole nella simulazione
+     * @param {number} workerCount - Numero di worker disponibili
+     * @param {Map} significantPairs - Mappa delle coppie significative con priorità
+     * @returns {Array} Piano di distribuzione ottimizzato
+     */
+    generateDistributionPlanWithPriorities(molecules, workerCount, significantPairs) {
+        // Reset del piano di elaborazione
+        this.resetWorkSession();
+        
+        const workPlan = [];
+        const moleculeCount = molecules.length;
+        const moleculeIndices = new Map();
+        
+        // Crea mappa degli indici per accesso veloce
+        molecules.forEach((mol, index) => {
+            moleculeIndices.set(mol.id, index);
+        });
+        
+        // FASE 1: Aggiungi prima le interazioni significative
+        if (significantPairs && significantPairs.size > 0) {
+            for (const [pairId, pairInfo] of significantPairs.entries()) {
+                const mol1Index = moleculeIndices.get(pairInfo.mol1Id);
+                const mol2Index = moleculeIndices.get(pairInfo.mol2Id);
+                
+                // Verifica che entrambe le molecole esistano
+                if (mol1Index === undefined || mol2Index === undefined) continue;
+                
+                // Controlla se la coppia è già stata calcolata in precedenza
+                if (this.isPairProcessed(pairInfo.mol1Id, pairInfo.mol2Id)) {
+                    this.stats.calculationsAvoided++;
+                    continue;
+                }
+                
+                // Aggiungi al piano con priorità elevata
+                workPlan.push({
+                    mol1Index: mol1Index,
+                    mol2Index: mol2Index,
+                    mol1Id: pairInfo.mol1Id,
+                    mol2Id: pairInfo.mol2Id,
+                    priority: pairInfo.priority || 10.0 // Priorità alta per default
+                });
+                
+                this.stats.totalCalculations++;
+            }
+        }
+        
+        // FASE 2: Aggiungi un sottoinsieme di altre interazioni potenziali
+        // Utilizza una matrice triangolare superiore ma con limite al numero di interazioni
+        
+        // Calcola limite interazioni basato sulla complessità
+        const maxTotalInteractions = Math.min(
+            2000, // Limite assoluto per prestazioni
+            Math.ceil(moleculeCount * Math.sqrt(moleculeCount) * 0.2) // Limite scalato
+        );
+        
+        // Se abbiamo già abbastanza interazioni significative, limitiamo quelle aggiuntive
+        const remainingSlots = Math.max(0, maxTotalInteractions - workPlan.length);
+        const skipFactor = Math.max(1, Math.floor((moleculeCount * (moleculeCount - 1) / 2) / remainingSlots));
+        
+        let interactionCounter = 0;
+        for (let i = 0; i < moleculeCount; i++) {
+            for (let j = i + 1; j < moleculeCount; j++) {
+                interactionCounter++;
+                
+                // Salta alcune interazioni per limitare il carico
+                if (interactionCounter % skipFactor !== 0 && workPlan.length >= maxTotalInteractions / 2) {
+                    continue;
+                }
+                
+                const mol1 = molecules[i];
+                const mol2 = molecules[j];
+                
+                // Salta se già presente nelle significative o già processata
+                const pairId = this.getPairId(mol1.id, mol2.id);
+                if (significantPairs && significantPairs.has(pairId)) continue;
+                if (this.isPairProcessed(mol1.id, mol2.id)) {
+                    this.stats.calculationsAvoided++;
+                    continue;
+                }
+                
+                // Aggiungi la coppia al piano di lavoro
+                workPlan.push({
+                    mol1Index: i,
+                    mol2Index: j,
+                    mol1Id: mol1.id,
+                    mol2Id: mol2.id,
+                    // Priorità basata sulla distanza
+                    priority: this.estimateInteractionPriority(mol1, mol2)
+                });
+                
+                this.stats.totalCalculations++;
+                
+                // Limita il numero totale di interazioni per mantenere le prestazioni
+                if (workPlan.length >= maxTotalInteractions) {
+                    i = moleculeCount; // Forza uscita dal loop esterno
+                    break;
+                }
+            }
+        }
+        
+        // Ordina il piano di lavoro in base alla priorità (più alta prima)
+        const sortedPlan = workPlan.sort((a, b) => b.priority - a.priority);
+        
+        // Dividi il piano in partizioni bilanciate
+        const partitions = this.partitionWorkPlan(sortedPlan, workerCount);
+        
+        // Prepara il piano di distribuzione
+        return partitions.map(partition => ({
+            interactions: partition,
+            moleculeIndices: this.getRequiredMoleculeIndices(partition)
+        }));
+    }
 }
+
 
 /**
  * Estendi EnhancedChemistry con il nuovo sistema di gestione interazioni
@@ -2309,6 +2433,7 @@ class OptimizedChemistry extends EnhancedChemistry {
     
     /**
      * Distribuisce il lavoro ai sub-worker in modo ottimizzato
+     * utilizzando la cache delle interazioni significative
      */
     async distributeWorkToSubWorkers() {
         if (this.subWorkers.length === 0 || this.isPaused) return;
@@ -2316,10 +2441,14 @@ class OptimizedChemistry extends EnhancedChemistry {
         // Attendi che tutti i sub-worker siano disponibili
         await this.waitForAvailableWorkers();
         
-        // Genera piano di distribuzione ottimizzato
-        const distributionPlan = this.interactionManager.generateDistributionPlan(
+        // PASSO 1: Identifica le interazioni significative usando la cache
+        const significantPairs = this.identifySignificantInteractions();
+        
+        // PASSO 2: Genera piano di distribuzione ottimizzato basato sulle interazioni significative
+        const distributionPlan = this.interactionManager.generateDistributionPlanWithPriorities(
             this.molecules, 
-            this.subWorkers.length
+            this.subWorkers.length,
+            significantPairs
         );
         
         // Distribuisci il lavoro ai worker
@@ -2342,8 +2471,80 @@ class OptimizedChemistry extends EnhancedChemistry {
         // Esegui pulizia periodica della cache
         if (Math.random() < 0.05) {
             const removed = this.interactionManager.cleanupCache();
-            console.log(`Rimosse ${removed} interazioni obsolete dalla cache`);
+            const moleculeRemoved = this.moleculeCache.cleanupStaleRelationships();
+            console.log(`Rimosse ${removed} interazioni obsolete dalla cache e ${moleculeRemoved} relazioni obsolete`);
         }
+    }
+
+    /**
+     * Identifica le coppie di molecole con interazioni significative
+     * utilizzando la cache delle molecole e le proprietà fisiche
+     */
+    identifySignificantInteractions() {
+        const significantPairs = new Map();
+        const interactionThreshold = this.rules.getConstant('interaction_threshold') || 5.0;
+        const now = performance.now();
+        
+        // 1. Considera prima le relazioni già presenti nella cache delle molecole
+        for (const [molId, relationships] of this.moleculeCache.moleculeRelationships.entries()) {
+            const mol1 = this.molecules.find(m => m.id === molId);
+            if (!mol1) continue;
+            
+            for (const rel of relationships) {
+                // Salta relazioni obsolete
+                if (now - rel.lastUpdated > this.moleculeCache.stalenessThreshold) continue;
+                
+                const mol2 = this.molecules.find(m => m.id === rel.otherId);
+                if (!mol2) continue;
+                
+                // Se la distanza è abbastanza piccola, considera l'interazione significativa
+                const currentDistance = this.calculateDistance(mol1, mol2);
+                if (currentDistance <= this.calculateMaxRelationshipDistance(mol1, mol2)) {
+                    const pairId = this.interactionManager.getPairId(mol1.id, mol2.id);
+                    significantPairs.set(pairId, {
+                        mol1Id: mol1.id,
+                        mol2Id: mol2.id,
+                        priority: 1.0 / (currentDistance + 0.1) * (mol1.mass + mol2.mass)
+                    });
+                }
+            }
+        }
+        
+        // 2. Aggiungi alcune interazioni casuali per scoprire nuove relazioni potenziali
+        // ma limita il numero per evitare di sovraccaricare il sistema
+        const randomPairCount = Math.min(50, Math.ceil(this.molecules.length * 0.05));
+        const randomInteractionRate = this.rules.getConstant('random_interaction_probability') || 0.05;
+        
+        if (randomInteractionRate > 0 && this.molecules.length > 10) {
+            for (let attempts = 0; attempts < randomPairCount * 2; attempts++) {
+                if (significantPairs.size >= significantPairs.size + randomPairCount) break;
+                
+                // Scegli molecole casuali
+                const idx1 = Math.floor(Math.random() * this.molecules.length);
+                let idx2 = Math.floor(Math.random() * this.molecules.length);
+                
+                // Evita coppie identiche
+                while (idx1 === idx2 && this.molecules.length > 1) {
+                    idx2 = Math.floor(Math.random() * this.molecules.length);
+                }
+                
+                const mol1 = this.molecules[idx1];
+                const mol2 = this.molecules[idx2];
+                const pairId = this.interactionManager.getPairId(mol1.id, mol2.id);
+                
+                // Aggiungi solo se non già considerata
+                if (!significantPairs.has(pairId)) {
+                    const distance = this.calculateDistance(mol1, mol2);
+                    significantPairs.set(pairId, {
+                        mol1Id: mol1.id,
+                        mol2Id: mol2.id,
+                        priority: 0.1 * (1.0 / (distance + 1.0) * (mol1.mass + mol2.mass))
+                    });
+                }
+            }
+        }
+        
+        return significantPairs;
     }
     
     /**
@@ -2386,6 +2587,7 @@ class OptimizedChemistry extends EnhancedChemistry {
     /**
      * Versione ottimizzata dell'aggiornamento fisico
      * Utilizza un piano prestabilito per le interazioni
+     * e sfrutta la cache per ridurre i calcoli
      */
     updatePhysicsWithInteractionPlan(moleculesToProcess, removedIndices, newMolecules) {
         const timeScale = this.rules.getConstant('time_scale');
@@ -2396,11 +2598,24 @@ class OptimizedChemistry extends EnhancedChemistry {
         const forces = new Map();
         moleculesToProcess.forEach(mol => forces.set(mol.id, [0, 0, 0]));
         
-        // Crea piano di interazioni ottimizzato
+        // 1. Prima usando le relazioni già in cache
+        this.updatePhysicsFromCache(moleculesToProcess, removedIndices, newMolecules, forces, timeScale, now);
+        
+        // 2. Poi usa il piano per altre interazioni potenzialmente significative
+        // ma limita il numero per evitare calcoli eccessivi
         const interactionPlan = this.interactionManager.buildInteractionWorkPlan(moleculesToProcess);
         
-        // Processa interazioni secondo il piano
-        for (const interaction of interactionPlan) {
+        // Limita il numero di interazioni da processare in base alla dimensione
+        const maxInteractions = Math.min(
+            1000,
+            Math.ceil(moleculesToProcess.length * Math.sqrt(moleculesToProcess.length) * 0.1)
+        );
+        
+        // Processa solo le interazioni a priorità più alta
+        const limitedPlan = interactionPlan.slice(0, maxInteractions);
+        
+        // Processa interazioni secondo il piano limitato
+        for (const interaction of limitedPlan) {
             const mol1 = moleculesToProcess[interaction.mol1Index];
             const mol2 = moleculesToProcess[interaction.mol2Index];
             
@@ -2413,49 +2628,15 @@ class OptimizedChemistry extends EnhancedChemistry {
             // Calcola distanza attuale
             const currentDistance = this.calculateDistance(mol1, mol2);
             
-            // Aggiorna o crea relazione nella cache
-            this.updateMoleculeRelationship(mol1, mol2, currentDistance, now);
-            
-            // Calcola e applica forze
-            if (currentDistance <= this.calculateMaxRelationshipDistance(mol1, mol2)) {
-                const [force1, force2] = this.calculateForces(mol1, mol2, currentDistance, now);
+            // Aggiorna o crea relazione nella cache solo se la distanza è significativa
+            const interactionThreshold = this.calculateInteractionThreshold(mol1, mol2);
+            if (currentDistance <= interactionThreshold) {
+                this.updateMoleculeRelationship(mol1, mol2, currentDistance, now);
                 
-                // Applica forze calcolate
-                const mol1Force = forces.get(mol1.id);
-                const mol2Force = forces.get(mol2.id);
-                
-                if (mol1Force && mol2Force) {
-                    for (let k = 0; k < 3; k++) {
-                        mol1Force[k] += force1[k] * timeScale;
-                        mol2Force[k] += force2[k] * timeScale;
-                    }
-                }
-                
-                // Verifica reazioni
-                if (currentDistance < this.calculateReactionDistance(mol1, mol2)) {
-                    if (this.shouldReact(mol1, mol2)) {
-                        // Trova indici nell'array originale
-                        const mol1OriginalIndex = this.molecules.findIndex(m => m.id === mol1.id);
-                        const mol2OriginalIndex = this.molecules.findIndex(m => m.id === mol2.id);
-                        
-                        if (mol1OriginalIndex >= 0 && mol2OriginalIndex >= 0) {
-                            const products = this.processReaction(mol1, mol2);
-                            if (products.length > 0) {
-                                newMolecules.push(...products);
-                                removedIndices.add(mol1OriginalIndex);
-                                removedIndices.add(mol2OriginalIndex);
-                                this.reactionCount++;
-                                
-                                // Rimuovi relazioni per molecole reagenti
-                                this.moleculeCache.removeAllRelationshipsForMolecule(mol1.id);
-                                this.moleculeCache.removeAllRelationshipsForMolecule(mol2.id);
-                                
-                                // Segna questa interazione come completata
-                                this.interactionManager.markPairProcessed(mol1.id, mol2.id);
-                                continue;
-                            }
-                        }
-                    }
+                // Calcola e applica forze solo se abbastanza vicine
+                const maxDistance = this.calculateMaxRelationshipDistance(mol1, mol2);
+                if (currentDistance <= maxDistance) {
+                    this.processInteraction(mol1, mol2, currentDistance, forces, removedIndices, newMolecules, now, timeScale);
                 }
             }
             
@@ -2465,6 +2646,98 @@ class OptimizedChemistry extends EnhancedChemistry {
         
         // Applica moto termico e aggiorna posizioni
         this.applyForcesAndUpdatePositions(moleculesToProcess, forces, timeScale, damping);
+    }
+
+    /**
+     * Elabora interazioni già memorizzate nella cache
+     */
+    updatePhysicsFromCache(molecules, removedIndices, newMolecules, forces, timeScale, now) {
+        // Per ogni molecola
+        for (const mol1 of molecules) {
+            if (removedIndices.has(mol1.id)) continue;
+            
+            // Ottieni relazioni dalla cache
+            const relationships = this.moleculeCache.getRelationshipsForMolecule(mol1);
+            if (!relationships || relationships.length === 0) continue;
+            
+            // Per ogni relazione in cache
+            for (const rel of relationships) {
+                if (now - rel.lastUpdated > this.moleculeCache.stalenessThreshold) continue;
+                
+                // Trova l'altra molecola
+                const mol2 = molecules.find(m => m.id === rel.otherId);
+                if (!mol2 || removedIndices.has(mol2.id)) continue;
+                
+                // Ricalcola distanza attuale
+                const currentDistance = this.calculateDistance(mol1, mol2);
+                
+                // Aggiorna timestamp e distanza nella cache
+                rel.distance = currentDistance;
+                rel.lastUpdated = now;
+                
+                // Verifica se la relazione è ancora significativa
+                const maxDistance = this.calculateMaxRelationshipDistance(mol1, mol2);
+                if (currentDistance <= maxDistance) {
+                    this.processInteraction(mol1, mol2, currentDistance, forces, removedIndices, newMolecules, now, timeScale);
+                }
+            }
+        }
+    }
+
+    /**
+     * Processa una singola interazione tra due molecole
+     */
+    processInteraction(mol1, mol2, distance, forces, removedIndices, newMolecules, now, timeScale) {
+        // Calcola forze
+        const [force1, force2] = this.calculateForces(mol1, mol2, distance, now);
+        
+        // Applica forze calcolate
+        const mol1Force = forces.get(mol1.id);
+        const mol2Force = forces.get(mol2.id);
+        
+        if (mol1Force && mol2Force) {
+            for (let k = 0; k < 3; k++) {
+                mol1Force[k] += force1[k] * timeScale;
+                mol2Force[k] += force2[k] * timeScale;
+            }
+        }
+        
+        // Verifica reazioni solo se abbastanza vicine
+        if (distance < this.calculateReactionDistance(mol1, mol2)) {
+            if (this.shouldReact(mol1, mol2)) {
+                // Trova indici nell'array originale
+                const mol1OriginalIndex = this.molecules.findIndex(m => m.id === mol1.id);
+                const mol2OriginalIndex = this.molecules.findIndex(m => m.id === mol2.id);
+                
+                if (mol1OriginalIndex >= 0 && mol2OriginalIndex >= 0) {
+                    const products = this.processReaction(mol1, mol2);
+                    if (products.length > 0) {
+                        newMolecules.push(...products);
+                        removedIndices.add(mol1OriginalIndex);
+                        removedIndices.add(mol2OriginalIndex);
+                        this.reactionCount++;
+                        
+                        // Rimuovi relazioni per molecole reagenti
+                        this.moleculeCache.removeAllRelationshipsForMolecule(mol1.id);
+                        this.moleculeCache.removeAllRelationshipsForMolecule(mol2.id);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Calcola soglia di interazione tra due molecole
+     */
+    calculateInteractionThreshold(mol1, mol2) {
+        // Calcola soglia basata su massa e carica
+        const massFactor = Math.sqrt(mol1.mass + mol2.mass);
+        const chargeFactor = Math.abs(mol1.charge) + Math.abs(mol2.charge);
+        
+        return Math.max(
+            3.0, // Minima distanza di interazione
+            massFactor * 0.8 + chargeFactor * 0.5
+        );
     }
     
     /**
