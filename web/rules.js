@@ -204,7 +204,7 @@ function createCustomRules() {
     }
     
     rules.addInteractionRule(
-        new InteractionRule("Charge Repulsion", 1.5, chargeRepulsionCondition, chargeRepulsionForce, 0.2,
+        new InteractionRule("Charge Repulsion", 1.5, chargeRepulsionCondition, chargeRepulsionForce, 0.3,
         "Repulsione tra molecole con cariche dello stesso segno")
     );
 

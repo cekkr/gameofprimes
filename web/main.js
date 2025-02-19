@@ -515,7 +515,7 @@ function createEnhancedMoleculeMesh(molData) {
     };
 
     // Scegli una dimensione semplice basata sul numero
-    const size = 0.2 + 0.1 * Math.log2(molData.number);
+    const size = 0.2 + 0.3 * Math.log2(molData.number);
 
     // Usa una geometria semplice: sfera per tutti
     const geometry = new THREE.SphereGeometry(size, 16, 16);
