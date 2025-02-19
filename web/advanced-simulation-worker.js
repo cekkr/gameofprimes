@@ -168,8 +168,8 @@ class MoleculeSerializer {
 ////
 
 // Configuration for multi-worker setup
-const NUM_SUB_WORKERS = navigator.hardwareConcurrency || 8; // Use available cores
-const INTERACTION_CACHE_LIFETIME = 10; // Frames to keep interaction cache
+const NUM_SUB_WORKERS = navigator.hardwareConcurrency || 4; // Use available cores
+const INTERACTION_CACHE_LIFETIME = 3; // Frames to keep interaction cache
 //const SPATIAL_GRID_SIZE = 50; // Size of spatial partitioning grid cells
 
 class EnhancedChemistry {
@@ -183,7 +183,7 @@ constructor(rules, size, moleculeCount, maxNumber) {
     this.nextMoleculeId = 1;
     this.reactionCount = 0;
 
-    const SPATIAL_GRID_SIZE = Math.floor(size / 4); // instead of a fixed size
+    const SPATIAL_GRID_SIZE = Math.floor(size / 8); // instead of a fixed size
     
     // Initialize sub-workers
     this.subWorkers = [];
