@@ -428,7 +428,7 @@ function bindControlEvents() {
 
 // MODIFICARE: Sovrascrivere la funzione init per chiamare setupUserInterface dopo la creazione del renderer
 function init() {
-    const spaceDimension = 50;
+    const spaceDimension = 100;
 
     // Scene setup
     scene = new THREE.Scene();
@@ -447,7 +447,7 @@ function init() {
     // Orbit Controls
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.1;
+    controls.dampingFactor = 0.25;
 
     // Lighting
     const ambientLight = new THREE.AmbientLight(0x404040);
