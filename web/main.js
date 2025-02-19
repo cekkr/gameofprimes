@@ -56,7 +56,7 @@ function init() {
   setupSceneHelpers(spaceDimension);
 
   // Initialize simulation
-  initializeSimulation(spaceDimension, 2, 100, 1);
+  initializeSimulation(spaceDimension, 2, 300, 1);
 
   // Make the simulation state globally accessible
   makeGloballyAccessible();
