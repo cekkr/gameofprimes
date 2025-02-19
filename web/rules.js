@@ -1,3 +1,5 @@
+// rules.js 
+
 import { PrimeMolecule } from './molecule.js';
 
 class InteractionRule {
@@ -27,18 +29,19 @@ class SimulationRules {
         this.interaction_rules = [];
         this.reaction_rules = [];
         this.constants = {
-            'G': 0.1,
-            'k': 1.0,
-            'min_distance': 0.5,
-            'max_force': 10.0,
-            'damping': 0.95,
+            'G': 0.05,           // Costante gravitazionale (ridotta per renderla più debole)
+            'k': 1.0,            // Costante elettrostatica
+            'min_distance': 0.5, // Distanza minima per evitare singolarità
+            'max_force': 10.0,   // Forza massima applicabile
+            'damping': 0.95,     // Smorzamento
             'temperature_factor': 1.0,
             'quantum_strength': 0.2,
-            'time_scale': 1.0,
+            'time_scale': 0.8,   // Rallentato per gravità più graduale
             'repulsion_decay_time': 2000, // Tempo in ms per cui le particelle restano ripulsive
             'cooling_period': 500, // Tempo in ms durante il quale le molecole non reagiscono dopo una reazione
             'entropy_factor': 0.3, // Fattore di entropia per prevenire il collasso gravitazionale
-            'family_repulsion': 1.5 // Intensità della repulsione tra "parenti"
+            'family_repulsion': 1.5, // Intensità della repulsione tra "parenti"
+            'random_interaction_probability': 0.05 // Probabilità di considerare molecole casuali nel caching
         };
         
         // Registro di relazioni parentali: mantiene traccia di quali molecole sono "parenti"
@@ -80,6 +83,11 @@ class SimulationRules {
         if (Math.random() < 0.01) {
             this.cleanupOldRelations();
         }
+    }
+    
+    // Nuova funzione per stabilire relazioni tra molecole
+    establishRelationship(parentId, childId, relationType, timestamp) {
+        this.registerFamily(parentId, childId, timestamp);
     }
     
     // Verifica se due molecole sono parenti
@@ -134,18 +142,19 @@ class SimulationRules {
     
     // Determina se una molecola è in "periodo di raffreddamento" dopo una reazione
     isInCoolingPeriod(molecule, currentTime) {
-        return (currentTime - molecule.lastReactionTime) < this.getConstant('cooling_period');
+        return (molecule.lastReactionTime && 
+                currentTime - molecule.lastReactionTime < this.getConstant('cooling_period'));
     }
 }
 
 // Miglioramenti alle regole di reazione in rules.js
-
 function createCustomRules() {
     const rules = new SimulationRules();
 
     // ==== REGOLE DI INTERAZIONE FISICA ====
 
     // 1. Gravità universale (tra tutte le molecole)
+    // Ora è più debole e il suo effetto dipende dalla massa
     function gravityCondition(factors1, factors2) { 
         return true; // Sempre attiva
     }
@@ -155,12 +164,15 @@ function createCustomRules() {
         const minDistance = rules.getConstant('min_distance');
         // Previeni divisione per zero
         const effectiveDistance = Math.max(distance, minDistance);
+        
+        // Effetto gravitazionale proporzionale alle masse
+        // Più forte per molecole più massive, più debole per molecole leggere
         return direction.map(x => x * G * mass1 * mass2 / (effectiveDistance ** 2));
     }
     
     rules.addInteractionRule(
-        new InteractionRule("Gravity", 1.0, gravityCondition, gravityForce, 0.15, 
-        "Attrazione gravitazionale universale")
+        new InteractionRule("Gravity", 1.0, gravityCondition, gravityForce, 0.2, 
+        "Attrazione gravitazionale universale - debole ma sempre presente")
     );
 
     // 2. Risonanza di fattori primi
@@ -169,20 +181,23 @@ function createCustomRules() {
         return shared.length >= 1;
     }
     
-    function resonanceForce(direction, distance, charge1, charge2) {
-        // Crea un movimento orbitale
+    function resonanceForce(direction, distance, mass1, mass2) {
+        // Crea un movimento orbitale proporzionale alle masse
         const orbital = crossProduct(direction, [0, 1, 0]);
         const norm = Math.sqrt(orbital[0]**2 + orbital[1]**2 + orbital[2]**2);
+        
         if (norm > 0) { 
+            // Aggiunge dipendenza dalle masse
+            const massEffect = Math.sqrt(mass1 * mass2) / (mass1 + mass2);
             // Forza più forte quando più vicini, ma non troppo da esplodere
-            return orbital.map(x => x / norm / (distance ** 0.8)); 
+            return orbital.map(x => x / norm * massEffect / (distance ** 0.8)); 
         }
         return [0, 0, 0];
     }
     
     rules.addInteractionRule(
         new InteractionRule("Prime Resonance", 2.0, resonanceCondition, resonanceForce, 0.3,
-        "Risonanza orbitale tra molecole con fattori primi comuni")
+        "Risonanza orbitale tra molecole con fattori primi comuni - influenzata dalla massa")
     );
 
     // 3. Repulsione elettrostatica tra molecole con carica dello stesso segno
@@ -200,7 +215,7 @@ function createCustomRules() {
         // Previeni divisione per zero
         const effectiveDistance = Math.max(distance, minDistance);
         // Forza repulsiva
-        return direction.map(x => -x * k * Math.abs(charge1) * Math.abs(charge2) / (effectiveDistance ** 2));
+        return direction.map(x => -x * k * Math.abs(charge1 * charge2) / (effectiveDistance ** 2));
     }
     
     rules.addInteractionRule(
@@ -221,7 +236,7 @@ function createCustomRules() {
         const minDistance = rules.getConstant('min_distance');
         const effectiveDistance = Math.max(distance, minDistance);
         // Forza attrattiva
-        return direction.map(x => x * k * Math.abs(charge1) * Math.abs(charge2) / (effectiveDistance ** 2));
+        return direction.map(x => x * k * Math.abs(charge1 * charge2) / (effectiveDistance ** 2));
     }
     
     rules.addInteractionRule(
@@ -232,14 +247,17 @@ function createCustomRules() {
     // ==== REGOLE DI REAZIONE CHIMICA ====
 
     // 1. Fusione - quando molecole con fattori primi comuni collidono
-    function fusionCondition(factors1, factors2) {
+    function fusionCondition(factors1, factors2, mol1, mol2) {
         // Devono avere almeno un fattore primo in comune
         const shared = Object.keys(factors1).filter(key => factors2.hasOwnProperty(key));
         // E ciascuna deve avere almeno un fattore non in comune con l'altra
         const diff1 = Object.keys(factors1).filter(key => !factors2.hasOwnProperty(key));
         const diff2 = Object.keys(factors2).filter(key => !factors1.hasOwnProperty(key));
         
-        return shared.length >= 1 && diff1.length > 0 && diff2.length > 0;
+        // Verifica anche se la massa combinata non è eccessiva
+        const combinedMass = mol1.mass + mol2.mass;
+        
+        return shared.length >= 1 && diff1.length > 0 && diff2.length > 0 && combinedMass < 100;
     }
     
     function fusionEffect(mol1, mol2) {
@@ -276,6 +294,8 @@ function createCustomRules() {
         // Crea nuova molecola
         const newMol = new PrimeMolecule(newNumber, newPos);
         newMol.velocity = newVel;
+        newMol.parentIds = [mol1.id, mol2.id];
+        newMol.reactionType = 'fusion';
         
         // Puoi anche creare un frammento (il fattore primo emesso)
         const fragmentPos = [
@@ -289,6 +309,8 @@ function createCustomRules() {
         // Velocità opposta per conservazione del momento
         const fragmentVel = newVel.map(v => -v * 1.5);
         fragment.velocity = fragmentVel;
+        fragment.parentIds = [mol1.id, mol2.id];
+        fragment.reactionType = 'emission';
         
         return [newMol, fragment];
     }
@@ -299,24 +321,19 @@ function createCustomRules() {
     );
 
     // 2. Fissione - scissione di molecole grandi
-    function fissionCondition(factors1, factors2) {
-        // Verifica se almeno una delle molecole è abbastanza grande
-        const num1 = Object.entries(factors1)
-            .reduce((acc, [prime, count]) => acc * (prime ** count), 1);
-        const num2 = Object.entries(factors2)
-            .reduce((acc, [prime, count]) => acc * (prime ** count), 1);
-            
+    function fissionCondition(factors1, factors2, mol1, mol2) {
         // La fissione avviene quando una molecola grande collide con una piccola
-        const largerNumber = Math.max(num1, num2);
-        const smallerNumber = Math.min(num1, num2);
+        // Usa il nuovo sistema di massa invece del numero
+        const largerMass = Math.max(mol1.mass, mol2.mass);
+        const smallerMass = Math.min(mol1.mass, mol2.mass);
         
-        return largerNumber > 80 && smallerNumber < 40;
+        return largerMass > 50 && smallerMass < 25;
     }
     
     function fissionEffect(mol1, mol2) {
         // Identifica molecola più grande
-        const bigger = mol1.number > mol2.number ? mol1 : mol2;
-        const smaller = mol1.number > mol2.number ? mol2 : mol1;
+        const bigger = mol1.mass > mol2.mass ? mol1 : mol2;
+        const smaller = mol1.mass > mol2.mass ? mol2 : mol1;
         
         // Verifica se ha abbastanza fattori primi
         const factors = Object.entries(bigger.prime_factors);
@@ -329,10 +346,11 @@ function createCustomRules() {
         let product2 = 1;
         
         for (const [prime, count] of factors) {
+            const primeNum = parseInt(prime);
             if (product1 <= product2) {
-                product1 *= prime ** count;
+                product1 *= primeNum ** count;
             } else {
-                product2 *= prime ** count;
+                product2 *= primeNum ** count;
             }
         }
         
@@ -369,14 +387,23 @@ function createCustomRules() {
         mol1New.velocity = normalizedDir;
         mol2New.velocity = normalizedDir.map(x => -x);
         
+        // Imposta relazioni di parentela
+        mol1New.parentIds = [bigger.id];
+        mol2New.parentIds = [bigger.id];
+        mol1New.reactionType = 'fission';
+        mol2New.reactionType = 'fission';
+        
         // La molecola piccola ottiene una velocità casuale
-        smaller.velocity = [
+        const smallerMolecule = new PrimeMolecule(smaller.number, [...smaller.position]);
+        smallerMolecule.velocity = [
             Math.random() * 2 - 1, 
             Math.random() * 2 - 1, 
             Math.random() * 2 - 1
         ];
+        smallerMolecule.parentIds = [smaller.id];
+        smallerMolecule.reactionType = 'catalyst';
         
-        return [mol1New, mol2New, smaller];
+        return [mol1New, mol2New, smallerMolecule];
     }
     
     rules.addReactionRule(
@@ -385,17 +412,14 @@ function createCustomRules() {
     );
 
     // 3. Decadimento spontaneo di molecole molto grandi
-    function decayCondition(factors1, factors2) {
-        // Verifica se la prima molecola è instabile (numero grande)
-        const num1 = Object.entries(factors1)
-            .reduce((acc, [prime, count]) => acc * (prime ** count), 1);
-            
-        return num1 > 150; // Molecole oltre 150 sono instabili
+    function decayCondition(factors1, factors2, mol1, mol2) {
+        // Verifica se una delle molecole è instabile in base alla massa
+        return mol1.mass > 80 || mol2.mass > 80;
     }
     
     function decayEffect(mol1, mol2) {
-        let mol = (mol1.number > 150) ? mol1 : mol2;
-        if (mol.number <= 150) return [];
+        let mol = (mol1.mass > 80) ? mol1 : mol2;
+        if (mol.mass <= 80) return [];
         
         const factors = Object.entries(mol.prime_factors);
         if (factors.length < 1) {
@@ -432,6 +456,8 @@ function createCustomRules() {
             
             const velocity = decayDirection.map(x => x / norm * 2.5);
             fragment.velocity = velocity;
+            fragment.parentIds = [mol.id];
+            fragment.reactionType = 'decay';
             
             newMolecules.push(fragment);
         }
@@ -442,6 +468,8 @@ function createCustomRules() {
             
             // Velocità residuo in direzione opposta per conservare momento
             remainder.velocity = newMolecules[0].velocity.map(v => -v * 0.5);
+            remainder.parentIds = [mol.id];
+            remainder.reactionType = 'decay';
             
             newMolecules.push(remainder);
         }
@@ -497,6 +525,12 @@ function createCustomRules() {
         // Aggiorna velocità (scambio di momento)
         newMol1.velocity = [...mol1.velocity];
         newMol2.velocity = [...mol2.velocity];
+        
+        // Relazioni di parentela
+        newMol1.parentIds = [mol1.id, mol2.id];
+        newMol2.parentIds = [mol1.id, mol2.id];
+        newMol1.reactionType = 'exchange';
+        newMol2.reactionType = 'exchange';
         
         return [newMol1, newMol2];
     }
@@ -556,6 +590,12 @@ function createCustomRules() {
             newMol2.velocity[i] = mol2.velocity[i] * 0.8 + toCenter2 * 0.05;
         }
         
+        // Relazioni di parentela
+        newMol1.parentIds = [mol1.id, mol2.id];
+        newMol2.parentIds = [mol1.id, mol2.id];
+        newMol1.reactionType = 'exchange';
+        newMol2.reactionType = 'exchange';
+        
         return [newMol1, newMol2];
     }
     
@@ -565,7 +605,7 @@ function createCustomRules() {
     );
     
     // 6. Catalisi - molecole prime accelerano reazioni vicine
-    function catalysisCondition(factors1, factors2) {
+    function catalysisCondition(factors1, factors2, mol1, mol2) {
         // Verifica se una delle molecole è un numero primo puro
         const isPrimePure1 = Object.keys(factors1).length === 1 && 
                             factors1[Object.keys(factors1)[0]] === 1;
@@ -588,6 +628,12 @@ function createCustomRules() {
         // Il catalizzatore rimane invariato, il substrato può trasformarsi
         const catalystPrime = parseInt(Object.keys(catalyst.prime_factors)[0]);
         
+        // Ottieni una copia del catalizzatore originale
+        const catalystCopy = new PrimeMolecule(catalyst.number, catalyst.position.slice());
+        catalystCopy.velocity = [...catalyst.velocity];
+        catalystCopy.parentIds = [catalyst.id];
+        catalystCopy.reactionType = 'catalyst';
+        
         // Possibili trasformazioni:
         // 1. Se il substrato è divisibile per il catalizzatore, si divide
         if (substrate.number % catalystPrime === 0) {
@@ -598,11 +644,13 @@ function createCustomRules() {
             
             // Velocità leggermente modificata
             product.velocity = substrate.velocity.map(v => v * 1.1);
+            product.parentIds = [substrate.id, catalyst.id];
+            product.reactionType = 'catalyzed';
             
             // Il catalizzatore rimbalza
-            catalyst.velocity = catalyst.velocity.map(v => -v * 0.9);
+            catalystCopy.velocity = catalyst.velocity.map(v => -v * 0.9);
             
-            return [catalyst, product];
+            return [catalystCopy, product];
         }
         
         // 2. Altrimenti, prova una moltiplicazione condizionale
@@ -613,15 +661,23 @@ function createCustomRules() {
             
             // Rallenta dopo l'aumento di massa
             product.velocity = substrate.velocity.map(v => v * 0.7);
+            product.parentIds = [substrate.id, catalyst.id];
+            product.reactionType = 'catalyzed';
             
             // Il catalizzatore rimbalza
-            catalyst.velocity = catalyst.velocity.map(v => -v * 0.9);
+            catalystCopy.velocity = catalyst.velocity.map(v => -v * 0.9);
             
-            return [catalyst, product];
+            return [catalystCopy, product];
         }
         
         // Se nessuna reazione è possibile, restituisci le molecole originali
-        return [catalyst, substrate];
+        catalystCopy.parentIds = [catalyst.id];
+        
+        const substrateCopy = new PrimeMolecule(substrate.number, substrate.position.slice());
+        substrateCopy.velocity = [...substrate.velocity];
+        substrateCopy.parentIds = [substrate.id];
+        
+        return [catalystCopy, substrateCopy];
     }
     
     rules.addReactionRule(
@@ -653,10 +709,11 @@ function createCustomRules() {
             }
         }
         
-        return charge / (1 + Math.log(
-            Object.entries(factors)
-                .reduce((acc, [p, c]) => acc * (p ** c), 1)
-        ));
+        // Calcola il totale dei fattori invece di usare il numero stesso
+        const totalFactors = Object.entries(factors)
+            .reduce((acc, [prime, exponent]) => acc + parseInt(prime) * exponent, 0);
+            
+        return charge / (1 + Math.sqrt(totalFactors));
     }
 
     return rules;

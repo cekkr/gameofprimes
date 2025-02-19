@@ -1713,3 +1713,5 @@ function makeGloballyAccessible() {
 
 // Initialize the simulation when script loads
 init();
+
+//import './advanced-simulation-worker.js';

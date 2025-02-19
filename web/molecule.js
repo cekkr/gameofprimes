@@ -1,4 +1,4 @@
-// molecule.js
+// molecule.js - Versione Modificata
 
 export class PrimeMolecule {
     constructor(number, position) {
@@ -19,6 +19,10 @@ export class PrimeMolecule {
             (Math.random() - 0.5) * 0.2,
             (Math.random() - 0.5) * 0.2
         ];
+        
+        // Tracking per le relazioni
+        this.parentIds = []; // IDs delle molecole "genitori"
+        this.reactionType = null; // Tipo di reazione che ha creato questa molecola
     }
 
     // Lazy-loaded getters
@@ -31,7 +35,8 @@ export class PrimeMolecule {
     
     get mass() {
         if (this._mass === null) {
-            this._mass = Math.log2(this.number) * 2;
+            // Nuovo calcolo della massa: somma dei (primi * esponenti)
+            this._mass = this.calculateMassByAddition();
         }
         return this._mass;
     }
@@ -54,7 +59,25 @@ export class PrimeMolecule {
         this._color = val;
     }
 
-    // More efficient factorization with memoization support
+    // Calcolo della massa con addizione di (primi * esponenti)
+    calculateMassByAddition() {
+        let totalMass = 0;
+        for (const prime in this.prime_factors) {
+            const primeValue = parseInt(prime);
+            const exponent = this.prime_factors[prime];
+            
+            // Aggiungi alla massa (primo * esponente)
+            totalMass += primeValue * exponent;
+        }
+        
+        // Scala la massa per renderla significativa nella simulazione
+        // Evita che sia troppo piccola o troppo grande
+        const scaledMass = Math.log(1 + totalMass) * 5;
+        
+        return Math.max(1, scaledMass); // Massa minima di 1
+    }
+
+    // Factorization più efficiente che consente più esponenti dello stesso numero primo
     factorize(n) {
         // Static cache for factorization results
         if (!PrimeMolecule.factorCache) {
@@ -96,15 +119,19 @@ export class PrimeMolecule {
         let charge = 0;
         for (const prime in this.prime_factors) {
             const count = this.prime_factors[prime];
-            if (prime == 2) {
+            const primeNum = parseInt(prime);
+            
+            if (primeNum == 2) {
                 charge += count * 2;
-            } else if (prime % 4 === 1) {
+            } else if (primeNum % 4 === 1) {
                 charge += count;
             } else {
                 charge -= count;
             }
         }
-        return charge / (1 + Math.log(this.number));
+        
+        // Normalizza la carica in base alla massa invece che al logaritmo del numero
+        return charge / (1 + Math.sqrt(this.mass));
     }
 
    generate_color() {
@@ -131,13 +158,14 @@ export class PrimeMolecule {
             h += (0.618033988749895 * prime) + (i * 0.1);
             h %= 1; // Keep hue within 0-1
 
-            s += count / (1 + Math.log(Math.max(...primes)));
+            // Usa gli esponenti per influenzare la saturazione
+            s += count / (1 + Math.sqrt(this.mass));
             v += 1 / (1 + Math.log(prime));
         }
         
         // Ensure values stay between 0 and 1
-        s = Math.min(1, s);
-        v = Math.min(1, v);
+        s = Math.min(1, Math.max(0.3, s));
+        v = Math.min(1, Math.max(0.5, v));
 
         // Check if we've cached this HSV combination
         const key = `${h.toFixed(3)}_${s.toFixed(3)}_${v.toFixed(3)}`;
@@ -185,7 +213,8 @@ export class PrimeMolecule {
 
     getHaloSize() {
         const timeSinceReaction = performance.now() - this.lastReactionTime;
-        const size = 0.4 + 0.1 * Math.log2(this.number);
+        // Usa la massa invece del logaritmo del numero
+        const size = 0.3 + 0.05 * this.mass;
         const factor = Math.max(0, 1 - timeSinceReaction/500); // Shrink
         return size * (1 + factor);
     }
