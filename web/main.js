@@ -3008,3 +3008,5 @@ function updateMoleculeInfoPanel(molecule, properties) {
 ///
 
 init();
+
+//import * as simulationModule from './advanced-simulation-worker.js';
