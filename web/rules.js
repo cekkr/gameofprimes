@@ -64,6 +64,40 @@ class SimulationRules {
 function createCustomRules() {
     const rules = new SimulationRules();
 
+
+    // ==== INTERACTION RULES ==== (No major changes here, but adjust strengths if needed)
+
+    // Base gravitational attraction
+    function gravityCondition(factors1, factors2) { return true; }
+    function gravityForce(direction, distance, mass1, mass2) {
+        const G = rules.getConstant('G');
+        return direction.map(x => x * G * mass1 * mass2 / (distance ** 2));
+    }
+    rules.addInteractionRule(new InteractionRule("Gravity", 1.0, gravityCondition, gravityForce, 0.1));
+
+    // Prime resonance orbital motion
+    function resonanceCondition(factors1, factors2) {
+        const shared = Object.keys(factors1).filter(key => factors2.hasOwnProperty(key));
+        return shared.length >= 1;
+    }
+    function resonanceForce(direction, distance, charge1, charge2) {
+        const orbital = crossProduct(direction, [0, 1, 0]);
+        const norm = Math.sqrt(orbital[0]**2 + orbital[1]**2 + orbital[2]**2);
+        if (norm > 0) { return orbital.map(x => x / norm / (distance ** 0.5)); }
+        return [0, 0, 0];
+    }
+    rules.addInteractionRule(new InteractionRule("Prime Resonance", 2.0, resonanceCondition, resonanceForce, 0.3));
+
+    // ==== REACTION RULES ====
+
+    // 1. Fusion with Emission (REDUCED PROBABILITY)
+    function fusionEmissionCondition(factors1, factors2) {
+        const shared = Object.keys(factors1).filter(key => factors2.hasOwnProperty(key));
+        const count2in1 = factors1[2] || 0;
+        const count2in2 = factors2[2] || 0;
+        return shared.length >= 2 && (count2in1 + count2in2) >= 1;
+    }
+
     // ==== INTERACTION RULES ====
 
     // Base gravitational attraction
@@ -110,19 +144,10 @@ function createCustomRules() {
 
     // ==== REACTION RULES ====
 
-    // Fusion with emission
-   function fusionEmissionCondition(factors1, factors2) {
-        const shared = Object.keys(factors1).filter(key => factors2.hasOwnProperty(key));
-        const count2in1 = factors1[2] || 0;
-        const count2in2 = factors2[2] || 0;
-
-        return shared.length >= 2 && (count2in1 + count2in2 ) >= 1;
-    }
-
     function fusionEmissionEffect(mol1, mol2) {
         let newNumber = mol1.number * mol2.number;
         const sharedPrimes = Object.keys(mol1.prime_factors).filter(key => mol2.prime_factors.hasOwnProperty(key));
-        const emittedPrime = Math.min(...sharedPrimes.map(Number));  //Convert to numbers for Math.min
+        const emittedPrime = Math.min(...sharedPrimes.map(Number));
         newNumber = Math.floor(newNumber / emittedPrime);
 
         const newPos = [
@@ -142,135 +167,146 @@ function createCustomRules() {
                 newPos[1] + normalizedDirection[1] * 0.5,
                 newPos[2] + normalizedDirection[2] * 0.5,
             ]
-
             const particle = new PrimeMolecule(emittedPrime, emissionPos);
-            particle.velocity = normalizedDirection.map(x=> x* 3.0); //high velocity
+            particle.velocity = normalizedDirection.map(x=> x* 3.0);
             particles.push(particle);
         }
         return [mainProduct, ...particles];
     }
+    rules.addReactionRule(new ReactionRule("Fusion with Emission", 2.0, fusionEmissionCondition, fusionEmissionEffect, 0.1)); // Reduced probability
 
-    rules.addReactionRule(new ReactionRule(
-        "Fusion with Emission",
-        2.0,
-        fusionEmissionCondition,
-        fusionEmissionEffect,
-        0.4
-    ));
-
-
-    // Fission reaction for large molecules
+    // 2. Fission (Based on size and proximity - promotes breakup)
     function fissionCondition(factors1, factors2) {
         const num1 = Object.entries(factors1).reduce((acc, [prime, count]) => acc * (prime ** count), 1);
         const num2 = Object.entries(factors2).reduce((acc, [prime, count]) => acc * (prime ** count), 1);
-
         return Math.max(num1, num2) > 100 && Math.min(num1, num2) < 50;
     }
 
-
     function fissionEffect(mol1, mol2) {
-      const bigger = mol1.number > mol2.number ? mol1 : mol2;
-      const smaller = mol1.number > mol2.number ? mol2 : mol1;
+        const bigger = mol1.number > mol2.number ? mol1 : mol2;
+        const smaller = mol1.number > mol2.number ? mol2 : mol1;
 
-      const factors = Object.entries(bigger.prime_factors);
-      if (factors.length < 2) {
-        return [];
-      }
-
-      let product1 = 1;
-      let product2 = 1;
-
-      for (const [prime, count] of factors) {
-        if (product1 <= product2) {
-            product1 *= prime ** count;
-        } else {
-            product2 *= prime ** count;
+        const factors = Object.entries(bigger.prime_factors);
+        if (factors.length < 2) {
+          return [];
         }
-      }
 
-        const vel = [Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1];
-        const norm = Math.sqrt(vel[0]**2 + vel[1]**2 + vel[2]**2);
-        const normalizedVel = vel.map(x => x / norm * 2.0);
+        let product1 = 1;
+        let product2 = 1;
 
-        const mol1New = new PrimeMolecule(product1, [
-            bigger.position[0] + (Math.random() * 0.2 - 0.1),
-            bigger.position[1] + (Math.random() * 0.2 - 0.1),
-            bigger.position[2] + (Math.random() * 0.2 - 0.1)
-        ]);
+        for (const [prime, count] of factors) {
+          if (product1 <= product2) {
+              product1 *= prime ** count;
+          } else {
+              product2 *= prime ** count;
+          }
+        }
 
-        const mol2New = new PrimeMolecule(product2, [
-            bigger.position[0] + (Math.random() * 0.2 - 0.1),
-            bigger.position[1] + (Math.random() * 0.2 - 0.1),
-            bigger.position[2] + (Math.random() * 0.2 - 0.1)
-        ]);
+          const vel = [Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1];
+          const norm = Math.sqrt(vel[0]**2 + vel[1]**2 + vel[2]**2);
+          const normalizedVel = vel.map(x => x / norm * 2.0);
 
-        mol1New.velocity = normalizedVel;
-        mol2New.velocity = normalizedVel.map(x => -x);
+          const mol1New = new PrimeMolecule(product1, [
+              bigger.position[0] + (Math.random() * 0.2 - 0.1),
+              bigger.position[1] + (Math.random() * 0.2 - 0.1),
+              bigger.position[2] + (Math.random() * 0.2 - 0.1)
+          ]);
 
-        smaller.velocity = [Math.random() * 2-1, Math.random()* 2-1, Math.random()* 2-1];
-        return [mol1New, mol2New, smaller];
+          const mol2New = new PrimeMolecule(product2, [
+              bigger.position[0] + (Math.random() * 0.2 - 0.1),
+              bigger.position[1] + (Math.random() * 0.2 - 0.1),
+              bigger.position[2] + (Math.random() * 0.2 - 0.1)
+          ]);
 
+          mol1New.velocity = normalizedVel;
+          mol2New.velocity = normalizedVel.map(x => -x);
+
+          smaller.velocity = [Math.random() * 2-1, Math.random()* 2-1, Math.random()* 2-1];
+          return [mol1New, mol2New, smaller];
     }
 
+    rules.addReactionRule(new ReactionRule("Fission", 1.5, fissionCondition, fissionEffect, 0.3));   
 
-    rules.addReactionRule(new ReactionRule(
-        "Fission",
-        1.5,
-        fissionCondition,
-        fissionEffect,
-        0.3
-    ));
+    // 3. Spontaneous Decay (for large molecules, regardless of neighbors)
+    function decayCondition(factors1, factors2) {
+        const num1 = Object.entries(factors1).reduce((acc, [prime, count]) => acc * (prime ** count), 1);
+        return num1 > 200;  // Larger molecules are unstable
+    }
 
-    // Catalytic decomposition
+    function decayEffect(mol1, mol2) {
+        let mol = (mol1.number > 200) ? mol1 : mol2;
+         if (mol.number <= 200) return [];
+    
+       const factors = Object.entries(mol.prime_factors);
+       if (factors.length < 1) { // Corrected this line
+         return [];  // Nothing to decay into
+       }
+    
+       //Decay in more than one particle
+       const numFragments = Math.min(factors.length, 3); // Limit fragments
+       const newMolecules = [];
+       let remainingNumber = mol.number;
+    
+       for (let i = 0; i < numFragments; i++){
+         const [prime, count] = factors[i];
+         const fragmentNumber = prime;
+    
+         remainingNumber = Math.floor(remainingNumber/fragmentNumber);
+         const fragment = new PrimeMolecule(fragmentNumber, mol.position.slice());
+         const decayDirection = [Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1];
+         const norm = Math.sqrt(decayDirection[0]**2 + decayDirection[1]**2 + decayDirection[2]**2);
+         const velocity = decayDirection.map(x => x/norm*2.5);
+         fragment.velocity = velocity;
+         newMolecules.push(fragment);
+       }
+    
+         if(remainingNumber > 1){ //There could be something left
+             const remainder = new PrimeMolecule(remainingNumber, mol.position.slice());
+             newMolecules.push(remainder);
+         }
+    
+       return newMolecules;
+     }
+
+    rules.addReactionRule(new ReactionRule("Spontaneous Decay", 1.2, decayCondition, decayEffect, 0.01)); // VERY LOW probability
+
+    // 4. Catalytic Decomposition (no changes, but keep it)
     function catalyticCondition(factors1, factors2) {
         const isPrime1 = Object.keys(factors1).length === 1;
         const isPrime2 = Object.keys(factors2).length === 1;
         const isComposite1 = Object.keys(factors1).length > 1;
         const isComposite2 = Object.keys(factors2).length > 1;
-
         return (isPrime1 && isComposite2) || (isPrime2 && isComposite1);
-
     }
-
 
     function catalyticEffect(mol1, mol2) {
-        const catalyst = Object.keys(mol1.prime_factors).length === 1 ? mol1: mol2;
-        const target   = Object.keys(mol1.prime_factors).length === 1 ? mol2: mol1;
+      const catalyst = Object.keys(mol1.prime_factors).length === 1 ? mol1: mol2;
+      const target   = Object.keys(mol1.prime_factors).length === 1 ? mol2: mol1;
 
-        const newMolecules = [];
-        for (const prime in target.prime_factors){
-            const count = target.prime_factors[prime];
-            for (let i = 0; i < count; i++){
-                const pos = [
-                    target.position[0] + (Math.random() * 1.0 - 0.5),
-                    target.position[1] + (Math.random() * 1.0 - 0.5),
-                    target.position[2] + (Math.random() * 1.0 - 0.5)
-                ];
-                const mol = new PrimeMolecule(parseInt(prime), pos); // Parse prime to integer
-                const vel = [Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1];
-                const norm = Math.sqrt(vel[0]**2 + vel[1]**2 + vel[2]**2);
-                mol.velocity = vel.map( x=> x/norm * 2.0);
-                newMolecules.push(mol);
-            }
-        }
+      const newMolecules = [];
+      for (const prime in target.prime_factors){
+          const count = target.prime_factors[prime];
+          for (let i = 0; i < count; i++){
+              const pos = [
+                  target.position[0] + (Math.random() * 1.0 - 0.5),
+                  target.position[1] + (Math.random() * 1.0 - 0.5),
+                  target.position[2] + (Math.random() * 1.0 - 0.5)
+              ];
+              const mol = new PrimeMolecule(parseInt(prime), pos); // Parse prime to integer
+              const vel = [Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1];
+              const norm = Math.sqrt(vel[0]**2 + vel[1]**2 + vel[2]**2);
+              mol.velocity = vel.map( x=> x/norm * 2.0);
+              newMolecules.push(mol);
+          }
+      }
 
-        catalyst.velocity[0] += Math.random() * 1.0 - 0.5;
-        catalyst.velocity[1] += Math.random() * 1.0 - 0.5;
-        catalyst.velocity[2] += Math.random() * 1.0 - 0.5;
-        newMolecules.push(catalyst);
-
-        return newMolecules;
-
+      catalyst.velocity[0] += Math.random() * 1.0 - 0.5;
+      catalyst.velocity[1] += Math.random() * 1.0 - 0.5;
+      catalyst.velocity[2] += Math.random() * 1.0 - 0.5;
+      newMolecules.push(catalyst);
+      return newMolecules;
     }
-
-    rules.addReactionRule(new ReactionRule(
-        "Catalytic Decomposition",
-        1.0,
-        catalyticCondition,
-        catalyticEffect,
-        0.25
-    ));
-
+    rules.addReactionRule(new ReactionRule("Catalytic Decomposition", 1.0, catalyticCondition, catalyticEffect, 0.25));
 
     //Helper function
     function crossProduct(a, b) {

@@ -9,6 +9,13 @@ export class PrimeMolecule {
         this.mass = Math.log2(number) * 2;
         this.charge = this.calculate_charge();
         this.color = this.generate_color();
+
+        // Add angular velocity
+        this.angularVelocity = [
+            (Math.random() - 0.5) * 0.2,  // Adjust the range as needed
+            (Math.random() - 0.5) * 0.2,
+            (Math.random() - 0.5) * 0.2
+        ];
     }
 
 

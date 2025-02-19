@@ -19,7 +19,7 @@ function init() {
     // Scene setup
     scene = new THREE.Scene();
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.z = simulationSize * 2;
+    camera.position.z = simulationSize * 1.5;
 
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -58,9 +58,9 @@ function init() {
      simulationWorker.postMessage({
         type: 'init',
         size: simulationSize,
-        moleculeCount: 400,
-        maxNumber: 1000,
-        timeScale: 0.1, // Send timeScale
+        moleculeCount: 300,
+        maxNumber: 200,
+        timeScale: 0.25, // Send timeScale
     });
 
 
@@ -93,25 +93,34 @@ function updateMoleculeMeshes() {
 
     // Create/update molecules based on simulationData
     simulationData.molecules.forEach(molData => {
-       // console.log("Processing molecule data:", molData); // Debugging
         const geometry = new THREE.SphereGeometry(0.2 + 0.1 * Math.log2(molData.number), 32, 16);
         const material = new THREE.MeshPhongMaterial({ color: new THREE.Color(...molData.color) });
         const sphere = new THREE.Mesh(geometry, material);
         sphere.position.set(...molData.position);
-        sphere.userData.moleculeData = molData; // Store simulation data with the mesh
+        sphere.userData.moleculeData = molData; // Store simulation data
         scene.add(sphere);
         molecules.push(sphere);
 
-        if (showVectors && molData.velocity) {
-            const dir = new THREE.Vector3(...molData.velocity);
-            const origin = new THREE.Vector3(...molData.position);
-            const length = dir.length();
-            const hex = 0xffff00; // Yellow
-
-            const arrowHelper = new THREE.ArrowHelper(dir.normalize(), origin, length, hex);
-            scene.add(arrowHelper);
-            molecules.push(arrowHelper);
+        // Apply Rotation
+        if (molData.angularVelocity) {
+            const axis = new THREE.Vector3(...molData.angularVelocity).normalize();
+            const angle = new THREE.Vector3(...molData.angularVelocity).length(); // Magnitude is the angle
+            const quaternion = new THREE.Quaternion().setFromAxisAngle(axis, angle);
+            sphere.quaternion.multiplyQuaternions(quaternion, sphere.quaternion);
         }
+
+        if (showVectors && molData.velocity) {
+          // ... (vector display, same)
+          const dir = new THREE.Vector3(...molData.velocity);
+          const origin = new THREE.Vector3(...molData.position);
+          const length = dir.length();
+          const hex = 0xffff00; // Yellow
+
+          const arrowHelper = new THREE.ArrowHelper(dir.normalize(), origin, length, hex);
+          scene.add(arrowHelper);
+          molecules.push(arrowHelper);
+        }
+
     });
 }
 

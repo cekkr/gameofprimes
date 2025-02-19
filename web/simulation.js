@@ -56,14 +56,13 @@ onmessage = function(event) {
 
 
 class PrimeChemistry {
-   constructor(rules, size, moleculeCount, maxNumber) {
+    constructor(rules, size, moleculeCount, maxNumber) {
         this.rules = rules;
         this.size = size;
         this.maxNumber = maxNumber;
         this.molecules = [];
         this.temperature = 1.0;
-        this.accumulatedTime = 0.0; // Track accumulated time
-
+        this.accumulatedTime = 0.0;
 
         // Initialize random molecules
         for (let i = 0; i < moleculeCount; i++) {
@@ -72,8 +71,17 @@ class PrimeChemistry {
                 Math.random() * size - size / 2,
                 Math.random() * size - size / 2
             ];
-            const number = Math.floor(Math.random() * 99) + 2; // Numbers 2-100
-            this.molecules.push(new PrimeMolecule(number, pos));
+            const number = Math.floor(Math.random() * 99) + 2;
+            const mol = new PrimeMolecule(number, pos);
+
+            // Add initial random velocity
+            mol.velocity = [
+                (Math.random() - 0.5) * 0.5, // Adjust initial velocity range
+                (Math.random() - 0.5) * 0.5,
+                (Math.random() - 0.5) * 0.5
+            ];
+
+            this.molecules.push(mol);
         }
     }
 
@@ -171,8 +179,12 @@ class PrimeChemistry {
             }
         }
 
-         // Update molecule list (efficient filtering)
+        // Update molecule list (efficient filtering)
         this.molecules = this.molecules.filter((_, i) => !removedMolecules.has(i)).concat(newMolecules);
+
+        if (this.molecules.length > 500 && false) { // just for debugging
+            this.molecules = this.molecules.slice(0, 500);
+        }
     }
     applyRules(mol1, mol2) {
         const direction = [
