@@ -211,7 +211,7 @@ class MoleculeSerializer {
 
 
 // Configurazione per setup multi-worker
-const NUM_SUB_WORKERS = navigator.hardwareConcurrency || 8; // Usa core disponibili
+const NUM_SUB_WORKERS = navigator.hardwareConcurrency || 4; // Usa core disponibili
 
 /**
  * Classe EnhancedChemistry - implementa simulazione di chimica con nuove regole fisiche
@@ -2061,319 +2061,6 @@ function updateQuantumFields(simulation) {
     }
 }
 
-/*
-// Main worker code
-let simulation;
-let previousMoleculeIds = new Set();
-let isSubWorker = false;
-let workerId = 'main';
-
-// Process messages from main thread or parent worker
-onmessage = async function(event) {
-try {
-const message = event.data;
-
-if (message.type === 'init_sub') {
-// Initialize as a sub-worker
-handleSubWorkerInitialization(message);
-return;
-}
-
-// For most commands, check if simulation is initialized
-if (message.type !== 'init' && !simulation) {
-console.error(`Worker ${workerId}: simulation not initialized for ${message.type}`);
-postMessage({
-type: 'error',
-message: `Simulation not initialized for ${message.type}`,
-workerId: workerId
-});
-return;
-}
-
-switch (message.type) {
-case 'init':
-await handleInitialization(message);
-break;
-
-case 'process_chunk':
-// Sub-worker specific: process molecule chunk
-handleProcessChunk(message);
-break;
-
-case 'step':
-// Process simulation step
-await simulation.step();
-if (!isSubWorker) {
-sendUpdate();
-}
-break;
-
-case 'cleanup':
-cleanupResources();
-break;
-
-case 'set_temperature':
-// Set temperature
-if (typeof message.value === 'number') {
-simulation.temperature = message.value;
-console.log(`Worker ${workerId}: temperature set to ${message.value}`);
-if (!isSubWorker) {
-sendUpdate();
-}
-} else {
-console.warn(`Worker ${workerId}: invalid temperature value: ${message.value}`);
-}
-break;
-
-case 'set_timescale':
-// Set timeScale
-if (typeof message.value === 'number') {
-simulation.setTimeScale(message.value);
-console.log(`Worker ${workerId}: timeScale set to ${message.value}`);
-}
-break;
-
-case 'add_molecules':
-// Add molecules
-const count = message.count || 20;
-simulation.addRandomMolecules(count);
-console.log(`Worker ${workerId}: added ${count} new molecules`);
-if (!isSubWorker) {
-sendUpdate();
-}
-break;
-
-case 'set_visualization':
-// Visual mode change (handled by main thread)
-console.log(`Worker ${workerId}: visualization mode set to ${message.mode}`);
-break;
-
-default:
-console.warn(`Worker ${workerId}: unknown message type '${message.type}'`);
-}
-} catch (error) {
-console.error(`Worker ${workerId}: error processing message '${event.data?.type}'`, error);
-postMessage({
-type: 'error',
-message: `Error in worker ${workerId}: ${error.message}`,
-workerId: workerId,
-stack: error.stack
-});
-}
-};
-
-async function handleInitialization(message) {
-const { size, moleculeCount, maxNumber, timeScale } = message;
-const rules = createCustomRules();
-rules.setConstant('time_scale', timeScale || 0.1);
-
-// Initialize simulation
-simulation = new EnhancedChemistry(rules, size, moleculeCount, maxNumber);
-simulation.isMainWorker = !isSubWorker;
-simulation.workerId = workerId;
-
-console.log(`Worker ${workerId}: simulation initialized with ${moleculeCount} molecules, timeScale=${timeScale}`);
-
-// Initialize sub-workers
-if (!isSubWorker) {
-try {
-await simulation.initializeSubWorkers();
-console.log(`Initialized ${simulation.subWorkers.length} sub-workers`);
-} catch (error) {
-console.error("Failed to initialize sub-workers:", error);
-// Continue with single-worker mode
-}
-}
-
-// Initial step
-await simulation.step();
-
-if (!isSubWorker) {
-sendUpdate();
-}
-}
-
-function handleSubWorkerInitialization(message) {
-// Configure as sub-worker
-isSubWorker = true;
-workerId = message.workerId;
-console.log(`Started sub-worker ${workerId}`);
-
-// Create rules instance
-const rules = createCustomRules();
-rules.setConstant('time_scale', message.timeScale || 0.1);
-
-// Initialize with empty molecule set - we'll receive chunks to process
-simulation = new EnhancedChemistry(rules, message.size, 0, message.maxNumber);
-simulation.isMainWorker = false;
-simulation.workerId = workerId;
-
-// Signal readiness
-postMessage({
-type: 'sub_ready',
-workerId: workerId
-});
-}
-
-function handleProcessChunk(message) {
-if (!simulation || !isSubWorker) return;
-
-try {
-// Get molecules to process
-const molecules = message.molecules || [];
-if (molecules.length === 0) {
-postMessage({
-type: 'chunk_processed',
-workerId: workerId,
-processedCount: 0,
-results: {
-moleculeUpdates: [],
-newMolecules: [],
-reactionCount: 0
-}
-});
-return;
-}
-
-// Import cached interactions
-if (message.cachedInteractions) {
-simulation.interactionCache.importCache(message.cachedInteractions);
-}
-
-// Set simulation parameters
-simulation.temperature = message.temperature || 1.0;
-simulation.rules.setConstant('time_scale', message.timeScale || 0.1);
-simulation.rules.setConstant('damping', message.damping || 0.99);
-
-// Create PrimeMolecule instances from serialized data
-const moleculeObjs = molecules.map(molData => 
-    MoleculeSerializer.deserialize(molData, PrimeMolecule)
-);
-
-// Process chunk
-const removedIndices = new Set();
-const newMolecules = [];
-const reactionCount = simulation.reactionCount;
-
-// Update molecules in-place
-simulation.updatePhysicsWithCache(moleculeObjs, removedIndices, newMolecules);
-
-// Prepare results
-const results = {
-// Updated molecule states
-moleculeUpdates: moleculeObjs
-.filter((_, i) => !removedIndices.has(i))
-.map(mol => ({
-    id: mol.id,
-position: [...mol.position],
-velocity: [...mol.velocity],
-lastReactionTime: mol.lastReactionTime,
-// Include number to help with identification
-number: mol.number
-})),
-
-// Newly created molecules - use serialization helper
-newMolecules: newMolecules.map(mol => MoleculeSerializer.serialize(mol)),
-
-// Number of reactions that occurred
-reactionCount: simulation.reactionCount - reactionCount
-};
-
-// Send results back
-postMessage({
-type: 'chunk_processed',
-workerId: workerId,
-processedCount: molecules.length,
-results: results
-});
-
-} catch (error) {
-console.error(`Sub-worker ${workerId}: error processing chunk`, error);
-postMessage({
-type: 'error',
-workerId: workerId,
-message: `Error processing chunk: ${error.message}`
-});
-}
-}
-
-function sendUpdate() {
-try {
-// Prepare data for sending
-const moleculeData = getOptimizedMoleculeData();
-
-// Debug
-console.log(`Worker ${workerId}: sending update with ${moleculeData.molecules.length} molecules, ${moleculeData.removedIds.length} removed`);
-
-// Send message with performance statistics
-postMessage({
-type: 'update',
-molecules: moleculeData,
-temperature: simulation.temperature,
-reactionCount: simulation.reactionCount,
-cacheStats: {
-size: simulation.interactionCache.cache.size,
-hitRate: simulation.interactionCache.hitRate
-},
-workerCount: simulation.subWorkers.length,
-workerStatus: simulation.subWorkers.map(worker => ({
-    id: worker.id,
-busy: worker.busy,
-lastProcessed: worker.lastProcessedMolecules
-}))
-});
-} catch (error) {
-console.error(`Worker ${workerId}: error sending update`, error);
-postMessage({
-type: 'error',
-message: `Error sending update: ${error.message}`,
-stack: error.stack
-});
-}
-}
-
-function getOptimizedMoleculeData() {
-const currentMoleculeIds = new Set();
-const result = [];
-
-// Serialize each molecule with all required properties
-for (const mol of simulation.molecules) {
-// Ensure each molecule has an ID
-const id = mol.id || `mol-${Math.random().toString(36).substring(2, 11)}`;
-mol.id = id;
-currentMoleculeIds.add(id);
-
-// Use serialization helper to ensure all required properties are included
-result.push(MoleculeSerializer.serialize(mol));
-}
-
-// Calculate removed molecules
-const removedIds = [...previousMoleculeIds].filter(id => !currentMoleculeIds.has(id));
-
-// Update set for next frame
-previousMoleculeIds = currentMoleculeIds;
-
-return {
-molecules: result,
-removedIds: removedIds
-};
-}
-
-function cleanupResources() {
-if (simulation) {
-simulation.cleanup();
-}
-
-simulation = null;
-previousMoleculeIds.clear();
-
-postMessage({ 
-type: 'cleanup_complete',
-workerId: workerId
-});
-}
-*/
-
 // Extension to PrimeMolecule prototype
 PrimeMolecule.prototype.isRelatedTo = function(otherMolecule, rules) {
     if (!this.id || !otherMolecule.id) return false;
@@ -2384,815 +2071,622 @@ PrimeMolecule.prototype.isRelatedTo = function(otherMolecule, rules) {
 /// Improved chemistry
 ///
 
+let simulation;
+let previousMoleculeIds = new Set();
+let isSubWorker = false;
+let workerId = 'main';
+
 /**
- * Enhanced Worker Control System
- * Fixes pause functionality and improves caching for molecule interactions
+ * MoleculeInteractionManager - gestisce efficientemente le interazioni tra molecole
+ * Implementa un sistema di calcolo non ridondante e ottimizzato per la parallelizzazione
  */
-
-// Extend the EnhancedChemistry class with improved worker control
-class ImprovedChemistry extends EnhancedChemistry {
-    constructor(rules, size, moleculeCount, maxNumber) {
-        super(rules, size, moleculeCount, maxNumber);
-        this.isPaused = false;
-
-        // Inizializza correttamente la moleculeCache
-        this.spatialGrid = null; // Rimuovi la grid-based partitioning
-        this.moleculeCache = new MoleculeCentricCache(); // Inizializza la nuova cache
-
-        // Altre inizializzazioni
-        this.stablePositions = new Map();
-        this.positionAccumulators = new Map();
-        this.positionSampleCount = new Map();
-        this.updateInProgress = false;
-        this.pendingPositionUpdate = false;
+class MoleculeInteractionManager {
+    constructor() {
+        // Mappa delle interazioni già calcolate (evita ridondanza)
+        this.calculatedPairs = new Set();
+        
+        // Cache per interazioni - utilizza ID unici per le coppie
+        this.interactionCache = new Map();
+        
+        // Statistiche sulle prestazioni
+        this.stats = {
+            calculationsAvoided: 0,
+            totalCalculations: 0,
+            cacheHits: 0
+        };
     }
 
-    // Override del metodo step
-    async step() {
-        if (this.isPaused) {
-            if (!this.isSubWorker) {
-                sendUpdate();
-            }
-            return;
-        }
-
-        // Imposta flag di aggiornamento in corso
-        this.updateInProgress = true;
-
-        const timeScale = this.rules.getConstant('time_scale');
-        this.accumulatedTime += timeScale;
-
-        // Aggiorna temperatura
-        this.temperature = 1.0 + 0.2 * Math.sin(performance.now() / 5000);
-
-        // Arrays per elaborazione efficiente
-        const newMolecules = [];
-        const removedIndices = new Set();
-
-        // Elabora la fisica usando sub-worker se disponibili
-        if (this.isMainWorker && this.subWorkers.length > 0) {
-            await this.distributeWorkToSubWorkers();
-        } else {
-            // Fallback a elaborazione single-thread
-            this.updatePhysics(removedIndices, newMolecules);
-        }
-
-        // Filtra molecole rimosse
-        if (removedIndices.size > 0) {
-            this.molecules = this.molecules.filter((_, i) => !removedIndices.has(i));
-        }
-
-        // Aggiungi nuove molecole
-        for (const mol of newMolecules) {
-            mol.id = `new-${this.nextMoleculeId++}`;
-            this.molecules.push(mol);
-        }
-
-        // Reset tempo accumulato
-        if (this.accumulatedTime >= 1.0) {
-            this.accumulatedTime = 0.0;
-            this.moleculeCache.cleanupStaleRelationships();
-        }
-
-        // Limita numero di molecole per performance
-        this.manageMoleculeCount();
-
-        // Aggiorna campi quantici
-        updateQuantumFields(this);
-
-        // Pulizia periodica relazioni obsolete
-        if (Math.random() < 0.05) {
-            this.rules.cleanupOldRelations && this.rules.cleanupOldRelations();
-        }
-
-        // Accumula posizioni per tutte le molecole
-        for (const mol of this.molecules) {
-            this.accumulatePosition(mol);
-        }
-
-        // Aggiornamento completato
-        this.updateInProgress = false;
-
-        // Invia aggiornamento solo quando tutte le posizioni sono state accumulate
-        if (this.isMainWorker) {
-            if (this.pendingPositionUpdate) {
-                // Stabilizza le posizioni prima di inviare
-                this.stabilizePositions();
-                sendUpdate();
-
-                // Reset flag e buffer
-                this.pendingPositionUpdate = false;
-                this.positionAccumulators.clear();
-                this.positionSampleCount.clear();
-            } else {
-                // Imposta flag per aggiornamento posizione al prossimo ciclo
-                this.pendingPositionUpdate = true;
-            }
-        }
+    /**
+     * Genera un ID univoco per ogni coppia di molecole
+     * Garantisce che (A,B) e (B,A) abbiano lo stesso ID
+     */
+    getPairId(mol1Id, mol2Id) {
+        // Ordina gli ID per garantire che (A,B) e (B,A) producano lo stesso ID
+        const [smaller, larger] = mol1Id < mol2Id 
+            ? [mol1Id, mol2Id] 
+            : [mol2Id, mol1Id];
+        return `${smaller}:${larger}`;
     }
 
-    // Accumula posizione di una molecola per una media stabile
-    accumulatePosition(molecule) {
-        const id = molecule.id;
-
-        // Inizializza accumulatore se necessario
-        if (!this.positionAccumulators.has(id)) {
-            this.positionAccumulators.set(id, [0, 0, 0]);
-            this.positionSampleCount.set(id, 0);
-        }
-
-        // Aggiungi posizione attuale all'accumulatore
-        const accumulator = this.positionAccumulators.get(id);
-        const count = this.positionSampleCount.get(id);
-
-        for (let i = 0; i < 3; i++) {
-            accumulator[i] += molecule.position[i];
-        }
-
-        this.positionSampleCount.set(id, count + 1);
+    /**
+     * Verifica se una coppia di molecole è già stata elaborata
+     */
+    isPairProcessed(mol1Id, mol2Id) {
+        const pairId = this.getPairId(mol1Id, mol2Id);
+        return this.calculatedPairs.has(pairId);
     }
 
-    // Calcola posizioni stabili come media delle posizioni accumulate
-    stabilizePositions() {
-        this.stablePositions.clear();
+    /**
+     * Marca una coppia come elaborata
+     */
+    markPairProcessed(mol1Id, mol2Id) {
+        const pairId = this.getPairId(mol1Id, mol2Id);
+        this.calculatedPairs.add(pairId);
+    }
 
-        for (const mol of this.molecules) {
-            const id = mol.id;
+    /**
+     * Memorizza il risultato dell'interazione nella cache
+     */
+    cacheInteraction(mol1Id, mol2Id, interactionData) {
+        const pairId = this.getPairId(mol1Id, mol2Id);
+        this.interactionCache.set(pairId, {
+            data: interactionData,
+            timestamp: performance.now()
+        });
+    }
 
-            if (this.positionAccumulators.has(id) && this.positionSampleCount.has(id)) {
-                const accumulator = this.positionAccumulators.get(id);
-                const count = this.positionSampleCount.get(id);
+    /**
+     * Recupera i dati di interazione dalla cache, se disponibili
+     */
+    getCachedInteraction(mol1Id, mol2Id) {
+        const pairId = this.getPairId(mol1Id, mol2Id);
+        const cached = this.interactionCache.get(pairId);
+        
+        if (cached) {
+            this.stats.cacheHits++;
+            return cached.data;
+        }
+        
+        return null;
+    }
 
-                if (count > 0) {
-                    // Calcola posizione media
-                    const stablePosition = [
-                        accumulator[0] / count,
-                        accumulator[1] / count,
-                        accumulator[2] / count
-                    ];
-
-                    // Memorizza posizione stabile
-                    this.stablePositions.set(id, stablePosition);
-
-                    // Aggiorna posizione della molecola con quella stabile
-                    // (solo per la visualizzazione, non per i calcoli fisici)
-                    const originalPosition = [...mol.position];
-                    mol.position = stablePosition;
-
-                    // Preserva la vera posizione fisica in una proprietà separata
-                    mol._physicsPosition = originalPosition;
+    /**
+     * Determina l'ordine ottimale di elaborazione per un gruppo di molecole
+     * Costruisce una lista di coppie da elaborare evitando duplicazioni
+     */
+    buildInteractionWorkPlan(molecules) {
+        // Reset del piano di elaborazione
+        this.resetWorkSession();
+        
+        const workPlan = [];
+        const moleculeCount = molecules.length;
+        
+        // Costruisci la lista utilizzando una matrice triangolare superiore
+        // In questo modo ogni coppia viene considerata una sola volta
+        for (let i = 0; i < moleculeCount; i++) {
+            for (let j = i + 1; j < moleculeCount; j++) {
+                const mol1 = molecules[i];
+                const mol2 = molecules[j];
+                
+                // Controlla se la coppia è già stata calcolata in precedenza
+                if (this.isPairProcessed(mol1.id, mol2.id)) {
+                    this.stats.calculationsAvoided++;
+                    continue;
                 }
+                
+                // Aggiungi la coppia al piano di lavoro
+                workPlan.push({
+                    mol1Index: i,
+                    mol2Index: j,
+                    mol1Id: mol1.id,
+                    mol2Id: mol2.id,
+                    // Priorità basata sulla distanza se disponibile nella cache
+                    priority: this.estimateInteractionPriority(mol1, mol2)
+                });
+                
+                this.stats.totalCalculations++;
             }
         }
+        
+        // Ordina il piano di lavoro in base alla priorità
+        return workPlan.sort((a, b) => b.priority - a.priority);
     }
-
-    // Override di calculateDistance per usare posizioni fisiche reali
-    calculateDistance(mol1, mol2) {
-        // Usa _physicsPosition se disponibile, altrimenti usa position
+    
+    /**
+     * Stima una priorità per l'interazione basata sulla massa e posizione relativa
+     */
+    estimateInteractionPriority(mol1, mol2) {
+        // Calcola distanza approssimativa
         const pos1 = mol1._physicsPosition || mol1.position;
         const pos2 = mol2._physicsPosition || mol2.position;
-
-        let sumSquared = 0;
+        
+        let distanceSquared = 0;
         for (let i = 0; i < 3; i++) {
             const diff = pos2[i] - pos1[i];
-            sumSquared += diff * diff;
+            distanceSquared += diff * diff;
         }
-        return Math.sqrt(sumSquared);
+        
+        // Molecole più vicine e con massa maggiore hanno priorità più alta
+        const combinedMass = (mol1.mass || 1) + (mol2.mass || 1);
+        return combinedMass / (distanceSquared + 1);
     }
-
-    // Override setTemperature per rispettare flag updateInProgress
-    setTemperature(value) {
-        this.temperature = value;
-
-        // Se aggiornamento in corso, attendi
-        if (!this.isMainWorker || !this.updateInProgress) {
-            propagateTemperature(value);
-        }
+    
+    /**
+     * Resetta le strutture dati per una nuova sessione di lavoro
+     * ma mantiene la cache delle interazioni per riutilizzarla
+     */
+    resetWorkSession() {
+        this.calculatedPairs.clear();
+        this.stats = {
+            calculationsAvoided: 0,
+            totalCalculations: 0,
+            cacheHits: 0
+        };
     }
-
-    // Override setTimeScale per rispettare flag updateInProgress
-    setTimeScale(value) {
-        if (this.rules) {
-            this.rules.setConstant('time_scale', value);
-
-            // Se aggiornamento in corso, attendi
-            if (!this.isMainWorker || !this.updateInProgress) {
-                propagateTimeScale(value);
+    
+    /**
+     * Pulisce le interazioni obsolete dalla cache
+     */
+    cleanupCache(maxAge = 5000) {
+        const now = performance.now();
+        let removed = 0;
+        
+        for (const [pairId, entry] of this.interactionCache.entries()) {
+            if (now - entry.timestamp > maxAge) {
+                this.interactionCache.delete(pairId);
+                removed++;
             }
         }
+        
+        return removed;
     }
-
-    // Nuovo metodo per ripristinare le posizioni fisiche reali
-    restorePhysicsPositions() {
-        for (const mol of this.molecules) {
-            if (mol._physicsPosition) {
-                mol.position = [...mol._physicsPosition];
-                delete mol._physicsPosition;
-            }
+    
+    /**
+     * Divide il piano di lavoro in lotti bilanciati per elaborazione parallela
+     */
+    partitionWorkPlan(workPlan, workerCount) {
+        if (workPlan.length === 0 || workerCount <= 1) {
+            return [workPlan];
         }
+        
+        // Determina il numero ottimale di partizioni
+        const partitionCount = Math.min(workerCount, Math.ceil(workPlan.length / 10));
+        const partitions = Array(partitionCount).fill().map(() => []);
+        
+        // Distribuisci il lavoro con metodo "round-robin" pesato
+        // Le coppie sono già ordinate per priorità, quindi le prime
+        // sono distribuite prima garantendo bilanciamento del carico
+        workPlan.forEach((workItem, index) => {
+            const partitionIndex = index % partitionCount;
+            partitions[partitionIndex].push(workItem);
+        });
+        
+        return partitions;
     }
-
-    // Override di cleanup
-    cleanup() {
-        this.isPaused = false;
-        this.updateInProgress = false;
-        this.pendingPositionUpdate = false;
-        this.stablePositions.clear();
-        this.positionAccumulators.clear();
-        this.positionSampleCount.clear();
-
-        // Cleanup resources
-        if (this.isMainWorker && this.subWorkers.length > 0) {
-            for (const subWorker of this.subWorkers) {
-                subWorker.worker.postMessage({
-                    type: 'cleanup'
-                });
-                subWorker.worker.terminate();
-            }
-            this.subWorkers = [];
-        }
-
-        this.molecules = [];
-        this.moleculeCache.clear();
+    
+    /**
+     * Genera un piano di distribuzione del lavoro completo per i subworker
+     */
+    generateDistributionPlan(molecules, workerCount) {
+        // Crea il piano di lavoro completo
+        const workPlan = this.buildInteractionWorkPlan(molecules);
+        
+        // Dividi il piano in partizioni bilanciate
+        const partitions = this.partitionWorkPlan(workPlan, workerCount);
+        
+        // Prepara il piano di distribuzione
+        return partitions.map(partition => ({
+            interactions: partition,
+            moleculeIndices: this.getRequiredMoleculeIndices(partition)
+        }));
     }
-
-    // Set pause state
-    setPauseState(isPaused) {
-        this.isPaused = isPaused;
-
-        // Propagate pause state to sub-workers
-        if (this.isMainWorker && this.subWorkers.length > 0) {
-            for (const subWorker of this.subWorkers) {
-                subWorker.worker.postMessage({
-                    type: 'set_pause',
-                    isPaused: isPaused
-                });
-            }
-        }
+    
+    /**
+     * Determina quali molecole sono necessarie per una partizione
+     */
+    getRequiredMoleculeIndices(partition) {
+        const indices = new Set();
+        
+        partition.forEach(item => {
+            indices.add(item.mol1Index);
+            indices.add(item.mol2Index);
+        });
+        
+        return [...indices].sort((a, b) => a - b);
     }
+}
 
-    // Override distributeWorkToSubWorkers to include pause state
+/**
+ * Estendi EnhancedChemistry con il nuovo sistema di gestione interazioni
+ */
+class OptimizedChemistry extends EnhancedChemistry {
+    constructor(rules, size, moleculeCount, maxNumber) {
+        super(rules, size, moleculeCount, maxNumber);
+        
+        // Inizializza il gestore interazioni
+        this.interactionManager = new MoleculeInteractionManager();
+    }
+    
+    /**
+     * Distribuisce il lavoro ai sub-worker in modo ottimizzato
+     */
     async distributeWorkToSubWorkers() {
         if (this.subWorkers.length === 0 || this.isPaused) return;
-
-        // Group molecules based on natural clustering instead of spatial grid
-        const moleculeClusters = this.groupMoleculesByProximity();
-
-        // Wait for all sub-workers to be ready
+        
+        // Attendi che tutti i sub-worker siano disponibili
         await this.waitForAvailableWorkers();
-
-        // Distribute clusters to available workers
-        let clusterIndex = 0;
+        
+        // Genera piano di distribuzione ottimizzato
+        const distributionPlan = this.interactionManager.generateDistributionPlan(
+            this.molecules, 
+            this.subWorkers.length
+        );
+        
+        // Distribuisci il lavoro ai worker
         const processingPromises = [];
-
-        for (const subWorker of this.subWorkers) {
-            if (clusterIndex >= moleculeClusters.length) break;
-
-            const cluster = moleculeClusters[clusterIndex++];
-            if (!cluster || cluster.length === 0) continue;
-
+        for (let i = 0; i < Math.min(this.subWorkers.length, distributionPlan.length); i++) {
+            const partition = distributionPlan[i];
+            const subWorker = this.subWorkers[i];
+            
+            if (!partition || partition.interactions.length === 0) continue;
+            
             subWorker.busy = true;
-
-            const promise = new Promise(resolve => {
-                const workerMessageHandler = (event) => {
-                    if (event.data.type === 'chunk_processed') {
-                        subWorker.worker.removeEventListener('message', workerMessageHandler);
-                        resolve();
-                    }
-                };
-
-                subWorker.worker.addEventListener('message', workerMessageHandler);
-
-                // Send molecules to process with cached relationships
-                const serializedMolecules = this.serializeMolecules(cluster);
-                const moleculeRelationships = this.moleculeCache.getRelationshipsForMolecules(cluster);
-
-                subWorker.worker.postMessage({
-                    type: 'process_chunk',
-                    molecules: serializedMolecules,
-                    temperature: this.temperature,
-                    timeScale: this.rules.getConstant('time_scale'),
-                    damping: this.rules.getConstant('damping'),
-                    cachedRelationships: moleculeRelationships,
-                    isPaused: this.isPaused
-                });
-            });
-
+            
+            const promise = this.assignWorkToSubWorker(subWorker, partition);
             processingPromises.push(promise);
         }
-
-        // Process remaining clusters in main thread if needed
-        if (clusterIndex < moleculeClusters.length) {
-            const remainingMolecules = [];
-            for (let i = clusterIndex; i < moleculeClusters.length; i++) {
-                remainingMolecules.push(...moleculeClusters[i]);
-            }
-
-            const removedIndices = new Set();
-            const newMolecules = [];
-
-            // Use molecule-centric caching
-            this.updatePhysicsWithMoleculeCache(remainingMolecules, removedIndices, newMolecules);
-
-            // Remove molecules that reacted
-            if (removedIndices.size > 0) {
-                this.molecules = this.molecules.filter((_, i) => !removedIndices.has(i));
-            }
-
-            // Add new molecules from reactions
-            for (const mol of newMolecules) {
-                mol.id = `new-${this.nextMoleculeId++}`;
-                this.molecules.push(mol);
-            }
-        }
-
-        // Wait for all workers to complete
+        
+        // Attendi che tutti i worker completino
         await Promise.all(processingPromises);
+        
+        // Esegui pulizia periodica della cache
+        if (Math.random() < 0.05) {
+            const removed = this.interactionManager.cleanupCache();
+            console.log(`Rimosse ${removed} interazioni obsolete dalla cache`);
+        }
     }
-
-    // New method to group molecules by proximity instead of grid
-    groupMoleculesByProximity() {
+    
+    /**
+     * Assegna una partizione di lavoro a un sub-worker
+     */
+    assignWorkToSubWorker(subWorker, partition) {
+        return new Promise(resolve => {
+            const workerMessageHandler = (event) => {
+                if (event.data.type === 'chunk_processed') {
+                    subWorker.worker.removeEventListener('message', workerMessageHandler);
+                    resolve();
+                }
+            };
+            
+            subWorker.worker.addEventListener('message', workerMessageHandler);
+            
+            // Prepara le molecole necessarie per questa partizione
+            const requiredMolecules = partition.moleculeIndices.map(
+                index => this.molecules[index]
+            );
+            
+            const serializedMolecules = this.serializeMolecules(requiredMolecules);
+            const cachedRelationships = this.moleculeCache.getRelationshipsForMolecules(requiredMolecules);
+            
+            // Invia al worker la partizione e le molecole necessarie
+            subWorker.worker.postMessage({
+                type: 'process_optimized_chunk',
+                molecules: serializedMolecules,
+                interactionPlan: partition.interactions,
+                moleculeIndices: partition.moleculeIndices,
+                cachedRelationships: cachedRelationships,
+                temperature: this.temperature,
+                timeScale: this.rules.getConstant('time_scale'),
+                damping: this.rules.getConstant('damping'),
+                isPaused: this.isPaused
+            });
+        });
+    }
+    
+    /**
+     * Versione ottimizzata dell'aggiornamento fisico
+     * Utilizza un piano prestabilito per le interazioni
+     */
+    updatePhysicsWithInteractionPlan(moleculesToProcess, removedIndices, newMolecules) {
+        const timeScale = this.rules.getConstant('time_scale');
+        const damping = this.rules.getConstant('damping');
+        const now = performance.now();
+        
+        // Pre-calcola forze per ogni molecola
+        const forces = new Map();
+        moleculesToProcess.forEach(mol => forces.set(mol.id, [0, 0, 0]));
+        
+        // Crea piano di interazioni ottimizzato
+        const interactionPlan = this.interactionManager.buildInteractionWorkPlan(moleculesToProcess);
+        
+        // Processa interazioni secondo il piano
+        for (const interaction of interactionPlan) {
+            const mol1 = moleculesToProcess[interaction.mol1Index];
+            const mol2 = moleculesToProcess[interaction.mol2Index];
+            
+            // Salta se una delle molecole è stata rimossa in un'iterazione precedente
+            if (removedIndices.has(interaction.mol1Index) || 
+                removedIndices.has(interaction.mol2Index)) {
+                continue;
+            }
+            
+            // Calcola distanza attuale
+            const currentDistance = this.calculateDistance(mol1, mol2);
+            
+            // Aggiorna o crea relazione nella cache
+            this.updateMoleculeRelationship(mol1, mol2, currentDistance, now);
+            
+            // Calcola e applica forze
+            if (currentDistance <= this.calculateMaxRelationshipDistance(mol1, mol2)) {
+                const [force1, force2] = this.calculateForces(mol1, mol2, currentDistance, now);
+                
+                // Applica forze calcolate
+                const mol1Force = forces.get(mol1.id);
+                const mol2Force = forces.get(mol2.id);
+                
+                if (mol1Force && mol2Force) {
+                    for (let k = 0; k < 3; k++) {
+                        mol1Force[k] += force1[k] * timeScale;
+                        mol2Force[k] += force2[k] * timeScale;
+                    }
+                }
+                
+                // Verifica reazioni
+                if (currentDistance < this.calculateReactionDistance(mol1, mol2)) {
+                    if (this.shouldReact(mol1, mol2)) {
+                        // Trova indici nell'array originale
+                        const mol1OriginalIndex = this.molecules.findIndex(m => m.id === mol1.id);
+                        const mol2OriginalIndex = this.molecules.findIndex(m => m.id === mol2.id);
+                        
+                        if (mol1OriginalIndex >= 0 && mol2OriginalIndex >= 0) {
+                            const products = this.processReaction(mol1, mol2);
+                            if (products.length > 0) {
+                                newMolecules.push(...products);
+                                removedIndices.add(mol1OriginalIndex);
+                                removedIndices.add(mol2OriginalIndex);
+                                this.reactionCount++;
+                                
+                                // Rimuovi relazioni per molecole reagenti
+                                this.moleculeCache.removeAllRelationshipsForMolecule(mol1.id);
+                                this.moleculeCache.removeAllRelationshipsForMolecule(mol2.id);
+                                
+                                // Segna questa interazione come completata
+                                this.interactionManager.markPairProcessed(mol1.id, mol2.id);
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Segna questa interazione come completata
+            this.interactionManager.markPairProcessed(mol1.id, mol2.id);
+        }
+        
+        // Applica moto termico e aggiorna posizioni
+        this.applyForcesAndUpdatePositions(moleculesToProcess, forces, timeScale, damping);
+    }
+    
+    /**
+     * Aggiorna una relazione tra molecole nella cache
+     */
+    updateMoleculeRelationship(mol1, mol2, distance, timestamp) {
+        // Crea o aggiorna relazione nella cache
+        this.moleculeCache.createRelationship(mol1, mol2, distance, timestamp);
+        
+        // Memorizza anche nell'interaction manager
+        this.interactionManager.cacheInteraction(mol1.id, mol2.id, {
+            distance: distance,
+            timestamp: timestamp
+        });
+    }
+    
+    /**
+     * Applica forze e aggiorna posizioni delle molecole
+     */
+    applyForcesAndUpdatePositions(molecules, forces, timeScale, damping) {
+        for (const mol of molecules) {
+            const molForce = forces.get(mol.id);
+            if (!molForce) continue;
+            
+            // Aggiorna velocità con forze
+            for (let k = 0; k < 3; k++) {
+                const acceleration = molForce[k] / mol.mass;
+                mol.velocity[k] += acceleration * 0.1;
+                mol.position[k] += mol.velocity[k] * timeScale;
+                mol.velocity[k] *= damping;
+            }
+            
+            // Verifica confini
+            this.enforceBoundaries(mol);
+        }
+    }
+    
+    /**
+     * Override dell'aggiornamento fisico standard per usare l'approccio ottimizzato
+     */
+    updatePhysicsWithMoleculeCache(moleculesToProcess, removedIndices, newMolecules) {
+        // Usa il nuovo metodo ottimizzato
+        this.updatePhysicsWithInteractionPlan(moleculesToProcess, removedIndices, newMolecules);
+    }
+    
+    /**
+     * Implementazione migliorata del raggruppamento di molecole in cluster
+     * usando l'approccio non ridondante
+     */
+    groupMoleculesByClusters() {
         if (this.molecules.length <= 1) {
             return [this.molecules];
         }
-
+        
         const clusters = [];
         const visited = new Set();
-        const proximityThreshold = this.size * 0.15; // Adaptive threshold based on world size
-
-        // Helper function to find molecules in proximity
+        const proximityThreshold = this.size * 0.15;
+        
+        // Helper per trovare cluster utilizzando il nuovo sistema
         const findCluster = (startMol) => {
             const cluster = [startMol];
             const queue = [startMol];
             visited.add(startMol.id);
-
+            
             while (queue.length > 0) {
                 const current = queue.shift();
-
-                // Find nearby molecules
-                for (const mol of this.molecules) {
-                    if (visited.has(mol.id)) continue;
-
-                    const distance = this.calculateDistance(current, mol);
+                
+                // Usa relazioni dalla cache quando possibile
+                const relationships = this.moleculeCache.getRelationshipsForMolecule(current);
+                
+                for (const rel of relationships) {
+                    const neighborMol = this.molecules.find(m => m.id === rel.otherId);
+                    if (!neighborMol || visited.has(neighborMol.id)) continue;
+                    
+                    // Verifica se relazione è ancora valida in termini di distanza
+                    const distance = rel.distance;
                     if (distance < proximityThreshold) {
-                        cluster.push(mol);
-                        queue.push(mol);
-                        visited.add(mol.id);
+                        cluster.push(neighborMol);
+                        queue.push(neighborMol);
+                        visited.add(neighborMol.id);
+                    }
+                }
+                
+                // Per molecole senza relazioni nella cache, crea nuovo piano di interazione
+                const unvisitedMolecules = this.molecules.filter(m => 
+                    !visited.has(m.id) && m.id !== current.id);
+                
+                if (unvisitedMolecules.length > 0) {
+                    // Costruisci mini piano solo per questa molecola
+                    const miniPlan = [];
+                    for (const mol of unvisitedMolecules) {
+                        if (this.interactionManager.isPairProcessed(current.id, mol.id)) {
+                            continue;
+                        }
+                        
+                        // Verifica distanza
+                        const distance = this.calculateDistance(current, mol);
+                        if (distance < proximityThreshold) {
+                            miniPlan.push({
+                                mol: mol,
+                                distance: distance
+                            });
+                            
+                            // Crea relazione nella cache
+                            this.moleculeCache.createRelationship(
+                                current, mol, distance, performance.now()
+                            );
+                            
+                            // Marca come processata
+                            this.interactionManager.markPairProcessed(current.id, mol.id);
+                        }
+                    }
+                    
+                    // Aggiungi molecole vicine al cluster
+                    for (const item of miniPlan) {
+                        if (!visited.has(item.mol.id)) {
+                            cluster.push(item.mol);
+                            queue.push(item.mol);
+                            visited.add(item.mol.id);
+                        }
                     }
                 }
             }
-
+            
             return cluster;
         };
-
-        // Form natural clusters based on molecule proximity
+        
+        // Forma cluster naturali basati su vicinanza
         for (const mol of this.molecules) {
             if (!visited.has(mol.id)) {
                 const cluster = findCluster(mol);
                 clusters.push(cluster);
             }
         }
-
-        // Balance cluster sizes
+        
+        // Bilancia dimensioni cluster
         this.balanceClusters(clusters);
-
+        
         return clusters;
-    }
-
-    // Modified to balance clusters more effectively
-    balanceClusters(clusters) {
-        if (clusters.length <= 1) return;
-
-        // Calculate ideal cluster size
-        const totalMolecules = clusters.reduce((sum, c) => sum + c.length, 0);
-        const idealSize = Math.max(
-            10,
-            Math.min(50, Math.ceil(totalMolecules / (this.subWorkers.length || 1)))
-        );
-
-        // Sort clusters by size (largest first)
-        clusters.sort((a, b) => b.length - a.length);
-
-        // Split overly large clusters
-        let i = 0;
-        while (i < clusters.length) {
-            if (clusters[i].length > idealSize * 1.5) {
-                // Find natural split point using molecule proximity
-                const newClusters = this.splitCluster(clusters[i], idealSize);
-
-                // Replace original cluster with first part
-                clusters[i] = newClusters[0];
-
-                // Add remaining parts as new clusters
-                clusters.push(...newClusters.slice(1));
-
-                // Resort clusters
-                clusters.sort((a, b) => b.length - a.length);
-            } else {
-                i++;
-            }
-        }
-
-        // Merge very small clusters
-        while (clusters.length > 1) {
-            const smallest = clusters.pop();
-            if (smallest.length < idealSize * 0.5) {
-                // Find closest cluster to merge with
-                let closestClusterIndex = -1;
-                let minDistance = Infinity;
-
-                for (let j = 0; j < clusters.length; j++) {
-                    const distance = this.calculateInterClusterDistance(smallest, clusters[j]);
-                    if (distance < minDistance) {
-                        minDistance = distance;
-                        closestClusterIndex = j;
-                    }
-                }
-
-                if (closestClusterIndex >= 0) {
-                    clusters[closestClusterIndex].push(...smallest);
-                } else {
-                    // Put it back if no good merge candidate
-                    clusters.push(smallest);
-                    break;
-                }
-            } else {
-                // Put it back if not too small
-                clusters.push(smallest);
-                break;
-            }
-        }
-    }
-
-    // Helper to split a large cluster
-    splitCluster(cluster, targetSize) {
-        // Use K-means like approach to split clusters
-        const result = [];
-        let remaining = [...cluster];
-
-        while (remaining.length > targetSize) {
-            // Find molecule farthest from center of mass
-            const centerOfMass = this.calculateCenterOfMass(remaining);
-            let farthestIndex = 0;
-            let maxDistance = 0;
-
-            for (let i = 0; i < remaining.length; i++) {
-                const distance = this.calculateDistanceFromPoint(remaining[i], centerOfMass);
-                if (distance > maxDistance) {
-                    maxDistance = distance;
-                    farthestIndex = i;
-                }
-            }
-
-            // Use the farthest molecule as a new center
-            const newCenter = remaining[farthestIndex];
-            const newCluster = [newCenter];
-            const newRemaining = [];
-
-            // Add nearest neighbors until we reach target size
-            remaining.splice(farthestIndex, 1);
-
-            // Sort remaining by distance to new center
-            const distanceMap = remaining.map((mol, index) => ({
-                index,
-                distance: this.calculateDistance(mol, newCenter)
-            }));
-
-            distanceMap.sort((a, b) => a.distance - b.distance);
-
-            // Take closest neighbors up to target size
-            const neighborsToTake = Math.min(targetSize - 1, remaining.length);
-            for (let i = 0; i < remaining.length; i++) {
-                if (i < neighborsToTake) {
-                    newCluster.push(remaining[distanceMap[i].index]);
-                } else {
-                    newRemaining.push(remaining[distanceMap[i].index]);
-                }
-            }
-
-            result.push(newCluster);
-            remaining = newRemaining;
-        }
-
-        // Add any remaining molecules as the last cluster
-        if (remaining.length > 0) {
-            result.push(remaining);
-        }
-
-        return result;
-    }
-
-    // Helper to calculate center of mass
-    calculateCenterOfMass(molecules) {
-        if (molecules.length === 0) return [0, 0, 0];
-
-        const center = [0, 0, 0];
-        let totalMass = 0;
-
-        for (const mol of molecules) {
-            const mass = mol.mass || 1;
-            totalMass += mass;
-
-            for (let i = 0; i < 3; i++) {
-                center[i] += mol.position[i] * mass;
-            }
-        }
-
-        if (totalMass > 0) {
-            for (let i = 0; i < 3; i++) {
-                center[i] /= totalMass;
-            }
-        }
-
-        return center;
-    }
-
-    // Helper to calculate distance from a point
-    calculateDistanceFromPoint(molecule, point) {
-        let sumSquared = 0;
-        for (let i = 0; i < 3; i++) {
-            const diff = molecule.position[i] - point[i];
-            sumSquared += diff * diff;
-        }
-        return Math.sqrt(sumSquared);
-    }
-
-    // Helper to calculate minimum distance between clusters
-    calculateInterClusterDistance(cluster1, cluster2) {
-        let minDistance = Infinity;
-
-        for (const mol1 of cluster1) {
-            for (const mol2 of cluster2) {
-                const distance = this.calculateDistance(mol1, mol2);
-                if (distance < minDistance) {
-                    minDistance = distance;
-                }
-            }
-        }
-
-        return minDistance;
-    }
-
-    // New physics update method using molecule-centric cache
-    updatePhysicsWithMoleculeCache(moleculesToProcess, removedIndices, newMolecules) {
-        const timeScale = this.rules.getConstant('time_scale');
-        const damping = this.rules.getConstant('damping');
-        const now = performance.now();
-
-        // Pre-calculate forces for each molecule
-        const forces = new Map();
-        moleculesToProcess.forEach(mol => forces.set(mol.id, [0, 0, 0]));
-
-        // Calculate which molecules need relationship calculation
-        const uncachedMolecules = this.moleculeCache.getUncachedMolecules(moleculesToProcess);
-
-        // Process uncached molecules first (establish new relationships)
-        for (const mol1 of uncachedMolecules) {
-            for (const mol2 of moleculesToProcess) {
-                if (mol1.id === mol2.id) continue;
-
-                // Check if they're close enough to establish a relationship
-                const distance = this.calculateDistance(mol1, mol2);
-                const interactionThreshold = this.calculateInteractionThreshold(mol1, mol2);
-
-                if (distance < interactionThreshold) {
-                    // Create new relationship in cache
-                    this.moleculeCache.createRelationship(mol1, mol2, distance, now);
-                }
-            }
-        }
-
-        // Now process all molecules with their cached relationships
-        for (let i = 0; i < moleculesToProcess.length; i++) {
-            const mol1 = moleculesToProcess[i];
-            if (removedIndices.has(i)) continue;
-
-            // Apply random thermal motion based on temperature
-            for (let axis = 0; axis < 3; axis++) {
-                mol1.velocity[axis] += (Math.random() - 0.5) * 0.01 * this.temperature;
-            }
-
-            // Get cached relationships for this molecule
-            const relationships = this.moleculeCache.getRelationshipsForMolecule(mol1);
-
-            // Process each relationship
-            for (const rel of relationships) {
-                // Find the other molecule in our processing list
-                const mol2Index = moleculesToProcess.findIndex(m => m.id === rel.otherId);
-                if (mol2Index < 0) continue; // Not in our batch
-
-                const mol2 = moleculesToProcess[mol2Index];
-                if (removedIndices.has(mol2Index)) continue;
-
-                // Update relationship distance
-                const currentDistance = this.calculateDistance(mol1, mol2);
-                rel.distance = currentDistance;
-                rel.lastUpdated = now;
-
-                // Check if relationship should be maintained
-                const maxDistance = this.calculateMaxRelationshipDistance(mol1, mol2);
-
-                if (currentDistance > maxDistance) {
-                    // Molecules moved too far apart, remove relationship
-                    this.moleculeCache.removeRelationship(mol1.id, mol2.id);
-                    continue;
-                }
-
-                // Calculate and apply forces
-                const [force1, force2] = this.calculateForces(mol1, mol2, currentDistance, now);
-
-                // Apply calculated forces
-                const mol1Force = forces.get(mol1.id);
-                const mol2Force = forces.get(mol2.id);
-
-                for (let k = 0; k < 3; k++) {
-                    mol1Force[k] += force1[k] * timeScale;
-                    mol2Force[k] += force2[k] * timeScale;
-                }
-
-                // Check for reactions
-                if (currentDistance < this.calculateReactionDistance(mol1, mol2)) {
-                    if (this.shouldReact(mol1, mol2)) {
-                        // Find indices in the original array
-                        const mol1Index = this.molecules.findIndex(m => m.id === mol1.id);
-                        const mol2Index = this.molecules.findIndex(m => m.id === mol2.id);
-
-                        if (mol1Index >= 0 && mol2Index >= 0) {
-                            const products = this.processReaction(mol1, mol2);
-                            if (products.length > 0) {
-                                newMolecules.push(...products);
-                                removedIndices.add(mol1Index);
-                                removedIndices.add(mol2Index);
-                                this.reactionCount++;
-
-                                // Remove relationships for reacting molecules
-                                this.moleculeCache.removeAllRelationshipsForMolecule(mol1.id);
-                                this.moleculeCache.removeAllRelationshipsForMolecule(mol2.id);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Apply forces and update positions
-        for (const mol of moleculesToProcess) {
-            const molForce = forces.get(mol.id);
-            if (!molForce) continue;
-
-            // Update velocity with forces
-            for (let k = 0; k < 3; k++) {
-                mol.velocity[k] += molForce[k] * 0.1;
-                mol.position[k] += mol.velocity[k] * timeScale;
-                mol.velocity[k] *= damping;
-            }
-
-            // Check boundaries
-            this.enforceBoundaries(mol);
-        }
-    }
-
-    // Helper methods for molecule relationships
-    calculateInteractionThreshold(mol1, mol2) {
-        // Dynamic threshold based on molecule properties
-        return Math.max(
-            5.0, // Minimum threshold
-            (mol1.mass + mol2.mass) * 1.2
-        );
-    }
-
-    calculateMaxRelationshipDistance(mol1, mol2) {
-        // Maximum distance to maintain a relationship
-        return Math.max(
-            10.0, // Minimum threshold
-            (mol1.mass + mol2.mass) * 2.0
-        );
-    }
-
-    calculateReactionDistance(mol1, mol2) {
-        // Distance at which molecules can react
-        return 1.0 + (mol1.mass + mol2.mass) * 0.1;
-    }
-
-    // Calculate forces between molecules
-    calculateForces(mol1, mol2, distance, now) {
-        // Calculate direction vector
-        const direction = [
-            mol2.position[0] - mol1.position[0],
-            mol2.position[1] - mol1.position[1],
-            mol2.position[2] - mol1.position[2]
-        ];
-
-        if (distance < 0.001) {
-            return [
-                [0, 0, 0],
-                [0, 0, 0]
-            ];
-        }
-
-        // Normalize direction
-        const dirNorm = direction.map(d => d / distance);
-
-        // Initialize forces
-        const force1 = [0, 0, 0];
-        const force2 = [0, 0, 0];
-
-        // Apply physics rules
-        for (const rule of this.rules.interaction_rules) {
-            if (rule.condition(mol1.prime_factors, mol2.prime_factors)) {
-                let f;
-                if (rule.force_function.length === 4) {
-                    // Force with mass
-                    f = rule.force_function(dirNorm, distance, mol1.mass, mol2.mass);
-                } else {
-                    // Force with charge
-                    f = rule.force_function(dirNorm, distance, mol1.charge, mol2.charge);
-                }
-
-                // Apply rule strength
-                for (let i = 0; i < 3; i++) {
-                    const scaledForce = f[i] * rule.strength;
-                    force1[i] += scaledForce;
-                    force2[i] -= scaledForce;
-                }
-            }
-        }
-
-        // Add family repulsion if applicable
-        if (this.rules.areRelated && this.rules.areRelated(mol1.id, mol2.id)) {
-            const repulsionFactor = this.rules.getFamilyRepulsionFactor &&
-                this.rules.getFamilyRepulsionFactor(mol1.id, mol2.id, now);
-
-            if (repulsionFactor > 0) {
-                const minDistance = this.rules.getConstant('min_distance') || 0.1;
-                const effectiveDistance = Math.max(distance, minDistance);
-                const repulsiveForce = dirNorm.map(
-                    x => -x * repulsionFactor / (effectiveDistance ** 1.5)
-                );
-
-                // Apply to resulting force
-                for (let i = 0; i < 3; i++) {
-                    force1[i] += repulsiveForce[i];
-                    force2[i] -= repulsiveForce[i];
-                }
-            }
-        }
-
-        // Limit maximum force
-        const maxForce = this.rules.getConstant('max_force');
-        for (let i = 0; i < 3; i++) {
-            force1[i] = Math.max(-maxForce, Math.min(maxForce, force1[i]));
-            force2[i] = Math.max(-maxForce, Math.min(maxForce, force2[i]));
-        }
-
-        return [force1, force2];
-    }
-
-    // Override cleanup to handle pause state
-    cleanup() {
-        // Reset pause state
-        this.isPaused = false;
-
-        // Cleanup resources
-        if (this.isMainWorker && this.subWorkers.length > 0) {
-            // Terminate all sub-workers
-            for (const subWorker of this.subWorkers) {
-                subWorker.worker.postMessage({
-                    type: 'cleanup'
-                });
-                subWorker.worker.terminate();
-            }
-            this.subWorkers = [];
-        }
-
-        this.molecules = [];
-        this.moleculeCache.clear();
     }
 }
 
 /**
- * Modified Main Worker Code
- * Includes support for pausing/resuming and improved caching
+ * Gestione dei messaggi nei sub-worker che supporta il nuovo approccio
+ * ottimizzato per le interazioni
  */
+function handleOptimizedProcessChunk(message) {
+    if (!simulation || !isSubWorker) return;
+    
+    try {
+        // Verifica stato pausa
+        if (message.isPaused) {
+            sendEmptyChunkResult();
+            return;
+        }
+        
+        // Ottieni molecole e piano interazioni
+        const serializedMolecules = message.molecules || [];
+        const interactionPlan = message.interactionPlan || [];
+        const moleculeIndices = message.moleculeIndices || [];
+        
+        if (serializedMolecules.length === 0 || interactionPlan.length === 0) {
+            sendEmptyChunkResult();
+            return;
+        }
+        
+        // Importa cache relazioni
+        importCachedRelationships(message.cachedRelationships);
+        
+        // Imposta parametri simulazione
+        setSimulationParameters(message);
+        
+        // Deserializza molecole
+        const moleculeObjs = serializedMolecules.map(
+            molData => MoleculeSerializer.deserialize(molData, PrimeMolecule)
+        );
+        
+        // Converti piano interazioni per adattarlo alle molecole deserializzate
+        const adaptedPlan = adaptInteractionPlan(interactionPlan, moleculeObjs, moleculeIndices);
+        
+        // Processa chunk
+        const removedIndices = new Set();
+        const newMolecules = [];
+        const reactionCount = simulation.reactionCount;
+        
+        // Usa piano ottimizzato per aggiornare molecole
+        processInteractionPlan(moleculeObjs, adaptedPlan, removedIndices, newMolecules);
+        
+        // Prepara risultati
+        const results = prepareProcessedResults(
+            moleculeObjs, 
+            removedIndices, 
+            newMolecules, 
+            reactionCount
+        );
+        
+        // Invia risultati
+        postMessage({
+            type: 'chunk_processed',
+            workerId: workerId,
+            processedCount: interactionPlan.length,
+            results: results
+        });
+        
+    } catch (error) {
+        reportProcessingError(error);
+    }
+}
 
-let simulation;
-let previousMoleculeIds = new Set();
-let isSubWorker = false;
-let workerId = 'main';
-
-// Process messages from main thread or parent worker
+/**
+ * Aggiornamento al gestore messaggi worker principale
+ * Supporta il nuovo tipo di messaggio 'process_optimized_chunk'
+ */
 onmessage = async function(event) {
     try {
         const message = event.data;
 
         if (message.type === 'init_sub') {
-            // Initialize as a sub-worker
             handleSubWorkerInitialization(message);
             return;
         }
 
-        // For most commands, check if simulation is initialized
         if (message.type !== 'init' && !simulation) {
             console.error(`Worker ${workerId}: simulation not initialized for ${message.type}`);
             postMessage({
@@ -3209,12 +2703,16 @@ onmessage = async function(event) {
                 break;
 
             case 'process_chunk':
-                // Sub-worker specific: process molecule chunk
+                // Metodo legacy per compatibilità
                 handleProcessChunk(message);
+                break;
+                
+            case 'process_optimized_chunk':
+                // Nuovo metodo ottimizzato
+                handleOptimizedProcessChunk(message);
                 break;
 
             case 'step':
-                // Process simulation step
                 await simulation.step();
                 if (!isSubWorker) {
                     sendUpdate();
@@ -3226,20 +2724,16 @@ onmessage = async function(event) {
                 break;
 
             case 'set_temperature':
-                // Set temperature
                 if (typeof message.value === 'number') {
                     simulation.temperature = message.value;
                     console.log(`Worker ${workerId}: temperature set to ${message.value}`);
                     if (!isSubWorker) {
                         sendUpdate();
                     }
-                } else {
-                    console.warn(`Worker ${workerId}: invalid temperature value: ${message.value}`);
                 }
                 break;
 
             case 'set_timescale':
-                // Set timeScale
                 if (typeof message.value === 'number') {
                     simulation.setTimeScale(message.value);
                     console.log(`Worker ${workerId}: timeScale set to ${message.value}`);
@@ -3247,12 +2741,10 @@ onmessage = async function(event) {
                 break;
 
             case 'set_pause':
-                // NEW: Set pause state
                 if (typeof message.isPaused === 'boolean') {
                     simulation.setPauseState(message.isPaused);
                     console.log(`Worker ${workerId}: pause state set to ${message.isPaused}`);
 
-                    // If main worker, still send updates when paused
                     if (!isSubWorker && message.isPaused) {
                         sendUpdate();
                     }
@@ -3260,18 +2752,12 @@ onmessage = async function(event) {
                 break;
 
             case 'add_molecules':
-                // Add molecules
                 const count = message.count || 20;
                 simulation.addRandomMolecules(count);
                 console.log(`Worker ${workerId}: added ${count} new molecules`);
                 if (!isSubWorker) {
                     sendUpdate();
                 }
-                break;
-
-            case 'set_visualization':
-                // Visual mode change (handled by main thread)
-                console.log(`Worker ${workerId}: visualization mode set to ${message.mode}`);
                 break;
 
             default:
@@ -3288,170 +2774,100 @@ onmessage = async function(event) {
     }
 };
 
-async function handleInitialization(message) {
-    const {
-        size,
-        moleculeCount,
-        maxNumber,
-        timeScale
-    } = message;
-    const rules = createCustomRules();
-    rules.setConstant('time_scale', timeScale || 0.1);
+///
+/// Worker and sub-workers
+///
 
-    // Initialize simulation with the improved version
-    simulation = new ImprovedChemistry(rules, size, moleculeCount, maxNumber);
-    simulation.isMainWorker = !isSubWorker;
-    simulation.workerId = workerId;
-
-    console.log(`Worker ${workerId}: simulation initialized with ${moleculeCount} molecules, timeScale=${timeScale}`);
-
-    // Initialize sub-workers
-    if (!isSubWorker) {
-        try {
-            await simulation.initializeSubWorkers();
-            console.log(`Initialized ${simulation.subWorkers.length} sub-workers`);
-        } catch (error) {
-            console.error("Failed to initialize sub-workers:", error);
-            // Continue with single-worker mode
-        }
-    }
-
-    // Initial step
-    await simulation.step();
-
-    if (!isSubWorker) {
-        sendUpdate();
-    }
-}
-
+/**
+ * Inizializza questo worker come sub-worker
+ * @param {Object} message - Messaggio di inizializzazione
+ */
 function handleSubWorkerInitialization(message) {
-    // Configure as sub-worker
+    // Configura come sub-worker
     isSubWorker = true;
     workerId = message.workerId;
     console.log(`Started sub-worker ${workerId}`);
 
-    // Create rules instance
+    // Crea istanza regole
     const rules = createCustomRules();
     rules.setConstant('time_scale', message.timeScale || 0.1);
 
-    // Initialize with empty molecule set - we'll receive chunks to process
-    simulation = new ImprovedChemistry(rules, message.size, 0, message.maxNumber);
+    // Inizializza con set molecole vuoto - riceveremo chunk da processare
+    simulation = new OptimizedChemistry(rules, message.size, 0, message.maxNumber);
     simulation.isMainWorker = false;
     simulation.workerId = workerId;
 
-    // Signal readiness
+    // Segnala disponibilità
     postMessage({
         type: 'sub_ready',
         workerId: workerId
     });
 }
 
+/**
+ * Gestisce un chunk standard (compatibilità legacy)
+ * @param {Object} message - Messaggio con chunk da processare
+ */
 function handleProcessChunk(message) {
     if (!simulation || !isSubWorker) return;
 
     try {
-        // Check pause state first
+        // Verifica stato pausa
         if (message.isPaused) {
-            // Send empty response if paused
-            postMessage({
-                type: 'chunk_processed',
-                workerId: workerId,
-                processedCount: 0,
-                results: {
-                    moleculeUpdates: [],
-                    newMolecules: [],
-                    reactionCount: 0
-                }
-            });
+            sendEmptyChunkResult();
             return;
         }
 
-        // Get molecules to process
+        // Ottieni molecole da processare
         const molecules = message.molecules || [];
         if (molecules.length === 0) {
-            postMessage({
-                type: 'chunk_processed',
-                workerId: workerId,
-                processedCount: 0,
-                results: {
-                    moleculeUpdates: [],
-                    newMolecules: [],
-                    reactionCount: 0
-                }
-            });
+            sendEmptyChunkResult();
             return;
         }
 
-        // Import cached relationships
+        // Importa relazioni dalla cache
         if (message.cachedRelationships) {
-            for (const [molId, relationships] of Object.entries(message.cachedRelationships)) {
-                for (const rel of relationships) {
-                    simulation.moleculeCache._ensureRelationshipsList(molId);
-                    simulation.moleculeCache._ensureRelationshipsList(rel.otherId);
-
-                    // Check if relationship already exists
-                    if (!simulation.moleculeCache.hasRelationship(molId, rel.otherId)) {
-                        const relEntry = {
-                            otherId: rel.otherId,
-                            distance: rel.distance,
-                            lastUpdated: rel.lastUpdated || performance.now()
-                        };
-
-                        simulation.moleculeCache.moleculeRelationships.get(molId).push(relEntry);
-
-                        // Add reverse relationship if needed
-                        if (!simulation.moleculeCache.hasRelationship(rel.otherId, molId)) {
-                            const reverseEntry = {
-                                otherId: molId,
-                                distance: rel.distance,
-                                lastUpdated: rel.lastUpdated || performance.now()
-                            };
-
-                            simulation.moleculeCache.moleculeRelationships.get(rel.otherId).push(reverseEntry);
-                        }
-                    }
-                }
-            }
+            importCachedRelationships(message.cachedRelationships);
         }
 
-        // Set simulation parameters
-        simulation.temperature = message.temperature || 1.0;
-        simulation.rules.setConstant('time_scale', message.timeScale || 0.1);
-        simulation.rules.setConstant('damping', message.damping || 0.99);
+        // Imposta parametri simulazione
+        setSimulationParameters(message);
 
-        // Create PrimeMolecule instances from serialized data
-        const moleculeObjs = molecules.map(molData =>
+        // Deserializza molecole
+        const moleculeObjs = molecules.map(molData => 
             MoleculeSerializer.deserialize(molData, PrimeMolecule)
         );
 
-        // Process chunk
+        // Processa chunk
         const removedIndices = new Set();
         const newMolecules = [];
         const reactionCount = simulation.reactionCount;
 
-        // Update molecules using new molecule-centric caching
+        // Aggiorna fisica usando caching centrato su molecole
         simulation.updatePhysicsWithMoleculeCache(moleculeObjs, removedIndices, newMolecules);
 
-        // Prepare results
+        // Prepara risultati
         const results = {
-            // Updated molecule states
+            // Aggiornamenti molecole
             moleculeUpdates: moleculeObjs
                 .filter((_, i) => !removedIndices.has(i))
                 .map(mol => MoleculeSerializer.serialize(mol)),
 
-            // Newly created molecules - use serialization helper
-            newMolecules: newMolecules.map(mol => MoleculeSerializer.serialize(mol)),
+            // Nuove molecole
+            newMolecules: newMolecules.map(mol => 
+                MoleculeSerializer.serialize(mol)
+            ),
 
-            // Number of reactions that occurred
+            // Numero reazioni avvenute
             reactionCount: simulation.reactionCount - reactionCount,
-
-            // Cache updates
+            
+            // Aggiornamenti relazioni
             updatedRelationships: simulation.moleculeCache.getRelationshipsForMolecules(
                 moleculeObjs.filter((_, i) => !removedIndices.has(i))
             )
         };
 
-        // Send results back
+        // Invia risultati
         postMessage({
             type: 'chunk_processed',
             workerId: workerId,
@@ -3460,55 +2876,257 @@ function handleProcessChunk(message) {
         });
 
     } catch (error) {
-        console.error(`Sub-worker ${workerId}: error processing chunk`, error);
-        postMessage({
-            type: 'error',
-            workerId: workerId,
-            message: `Error processing chunk: ${error.message}`
-        });
+        reportProcessingError(error);
     }
 }
 
-
-// Modifica alla funzione sendUpdate
-function sendUpdate() {
-    try {
-        // Prepara dati usando posizioni stabili quando disponibili
-        const moleculeData = getOptimizedMoleculeData(simulation.stablePositions);
-
-        postMessage({
-            type: 'update',
-            molecules: moleculeData,
-            temperature: simulation.temperature,
-            reactionCount: simulation.reactionCount,
-            isPaused: simulation.isPaused,
-            cacheStats: {
-                moleculeRelationships: simulation.moleculeCache.moleculeRelationships.size,
-                totalRelationships: countTotalRelationships()
-            },
-            workerCount: simulation.subWorkers.length,
-            workerStatus: simulation.subWorkers.map(worker => ({
-                id: worker.id,
-                busy: worker.busy,
-                lastProcessed: worker.lastProcessedMolecules
-            }))
-        });
-
-        // Ripristina posizioni fisiche reali dopo l'invio dell'aggiornamento
-        if (simulation.stablePositions.size > 0) {
-            simulation.restorePhysicsPositions();
+/**
+ * Invia risultato vuoto per chunk
+ */
+function sendEmptyChunkResult() {
+    postMessage({
+        type: 'chunk_processed',
+        workerId: workerId,
+        processedCount: 0,
+        results: {
+            moleculeUpdates: [],
+            newMolecules: [],
+            reactionCount: 0,
+            updatedRelationships: {}
         }
-    } catch (error) {
-        console.error(`Worker ${workerId}: error sending update`, error);
-        postMessage({
-            type: 'error',
-            message: `Error sending update: ${error.message}`,
-            stack: error.stack
-        });
+    });
+}
+
+/**
+ * Importa relazioni dalla cache
+ * @param {Object} relationships - Relazioni da importare
+ */
+function importCachedRelationships(relationships) {
+    if (!relationships) return;
+    
+    for (const [molId, rels] of Object.entries(relationships)) {
+        for (const rel of rels) {
+            simulation.moleculeCache._ensureRelationshipsList(molId);
+            simulation.moleculeCache._ensureRelationshipsList(rel.otherId);
+            
+            // Verifica se relazione già esiste
+            if (!simulation.moleculeCache.hasRelationship(molId, rel.otherId)) {
+                const relEntry = {
+                    otherId: rel.otherId,
+                    distance: rel.distance,
+                    lastUpdated: rel.lastUpdated || performance.now()
+                };
+                
+                simulation.moleculeCache.moleculeRelationships.get(molId).push(relEntry);
+                
+                // Aggiungi relazione inversa se necessario
+                if (!simulation.moleculeCache.hasRelationship(rel.otherId, molId)) {
+                    const reverseEntry = {
+                        otherId: molId,
+                        distance: rel.distance,
+                        lastUpdated: rel.lastUpdated || performance.now()
+                    };
+                    
+                    simulation.moleculeCache.moleculeRelationships.get(rel.otherId).push(reverseEntry);
+                }
+            }
+        }
     }
 }
 
-// Funzione aggiornata per utilizzare posizioni stabili
+/**
+ * Imposta parametri di simulazione
+ * @param {Object} message - Messaggio con parametri
+ */
+function setSimulationParameters(message) {
+    simulation.temperature = message.temperature || 1.0;
+    simulation.rules.setConstant('time_scale', message.timeScale || 0.1);
+    simulation.rules.setConstant('damping', message.damping || 0.99);
+}
+
+/**
+ * Segnala errore elaborazione
+ * @param {Error} error - Errore riscontrato
+ */
+function reportProcessingError(error) {
+    console.error(`Sub-worker ${workerId}: errore elaborazione chunk`, error);
+    postMessage({
+        type: 'error',
+        workerId: workerId,
+        message: `Error processing chunk: ${error.message}`
+    });
+}
+
+/**
+ * Adatta il piano di interazione alle molecole deserializzate
+ * @param {Array} plan - Piano interazioni originale
+ * @param {Array} molecules - Molecole deserializzate 
+ * @param {Array} indices - Indici molecole
+ * @returns {Array} Piano adattato
+ */
+function adaptInteractionPlan(plan, molecules, indices) {
+    return plan.map(interaction => ({
+        mol1: molecules[indices.indexOf(interaction.mol1Index)],
+        mol2: molecules[indices.indexOf(interaction.mol2Index)],
+        mol1Id: interaction.mol1Id,
+        mol2Id: interaction.mol2Id,
+        priority: interaction.priority
+    }));
+}
+
+/**
+ * Elabora le interazioni secondo il piano ottimizzato
+ * @param {Array} molecules - Molecole da processare
+ * @param {Array} plan - Piano interazioni
+ * @param {Set} removedIndices - Set per indici rimossi
+ * @param {Array} newMolecules - Array per nuove molecole
+ */
+function processInteractionPlan(molecules, plan, removedIndices, newMolecules) {
+    const timeScale = simulation.rules.getConstant('time_scale');
+    const damping = simulation.rules.getConstant('damping');
+    const now = performance.now();
+    
+    // Pre-calcola forze per ogni molecola
+    const forces = new Map();
+    molecules.forEach(mol => forces.set(mol.id, [0, 0, 0]));
+    
+    // Processa ogni interazione pianificata
+    for (const interaction of plan) {
+        const mol1 = interaction.mol1;
+        const mol2 = interaction.mol2;
+        
+        // Salta se una delle molecole è stata rimossa
+        if (!mol1 || !mol2 || removedIndices.has(mol1.id) || removedIndices.has(mol2.id)) {
+            continue;
+        }
+        
+        // Calcola distanza attuale
+        const currentDistance = simulation.calculateDistance(mol1, mol2);
+        
+        // Aggiorna relazione nella cache
+        simulation.moleculeCache.createRelationship(mol1, mol2, currentDistance, now);
+        
+        // Calcola forze se molecole abbastanza vicine
+        if (currentDistance <= simulation.calculateMaxRelationshipDistance(mol1, mol2)) {
+            const [force1, force2] = simulation.calculateForces(mol1, mol2, currentDistance, now);
+            
+            // Applica forze
+            const mol1Force = forces.get(mol1.id);
+            const mol2Force = forces.get(mol2.id);
+            
+            if (mol1Force && mol2Force) {
+                for (let k = 0; k < 3; k++) {
+                    mol1Force[k] += force1[k] * timeScale;
+                    mol2Force[k] += force2[k] * timeScale;
+                }
+            }
+            
+            // Verifica reazioni
+            processReactionIfNeeded(mol1, mol2, currentDistance, removedIndices, newMolecules);
+        }
+    }
+    
+    // Applica forze e aggiorna posizioni
+    applyForcesAndMove(molecules, forces, timeScale, damping);
+}
+
+/**
+ * Processa una possibile reazione tra molecole
+ * @param {Object} mol1 - Prima molecola
+ * @param {Object} mol2 - Seconda molecola
+ * @param {number} distance - Distanza tra molecole
+ * @param {Set} removedIndices - Set per indici rimossi
+ * @param {Array} newMolecules - Array per nuove molecole
+ */
+function processReactionIfNeeded(mol1, mol2, distance, removedIndices, newMolecules) {
+    if (distance < simulation.calculateReactionDistance(mol1, mol2)) {
+        if (simulation.shouldReact(mol1, mol2)) {
+            const products = simulation.processReaction(mol1, mol2);
+            if (products.length > 0) {
+                newMolecules.push(...products);
+                
+                // Aggiungi a indici da rimuovere
+                const mol1Index = simulation.molecules.findIndex(m => m.id === mol1.id);
+                const mol2Index = simulation.molecules.findIndex(m => m.id === mol2.id);
+                
+                if (mol1Index >= 0) removedIndices.add(mol1.id);
+                if (mol2Index >= 0) removedIndices.add(mol2.id);
+                
+                simulation.reactionCount++;
+                
+                // Rimuovi relazioni
+                simulation.moleculeCache.removeAllRelationshipsForMolecule(mol1.id);
+                simulation.moleculeCache.removeAllRelationshipsForMolecule(mol2.id);
+            }
+        }
+    }
+}
+
+/**
+ * Applica forze e aggiorna posizioni delle molecole
+ * @param {Array} molecules - Molecole da aggiornare
+ * @param {Map} forces - Mappa delle forze
+ * @param {number} timeScale - Scala temporale
+ * @param {number} damping - Fattore smorzamento
+ */
+function applyForcesAndMove(molecules, forces, timeScale, damping) {
+    for (const mol of molecules) {
+        const molForce = forces.get(mol.id);
+        if (!molForce) continue;
+        
+        // Applica moto termico casuale
+        for (let axis = 0; axis < 3; axis++) {
+            mol.velocity[axis] += (Math.random() - 0.5) * 0.01 * simulation.temperature;
+        }
+        
+        // Aggiorna velocità con forze
+        for (let k = 0; k < 3; k++) {
+            const acceleration = molForce[k] / mol.mass;
+            mol.velocity[k] += acceleration * 0.1;
+            mol.position[k] += mol.velocity[k] * timeScale;
+            mol.velocity[k] *= damping;
+        }
+        
+        // Verifica confini
+        simulation.enforceBoundaries(mol);
+    }
+}
+
+/**
+ * Prepara i risultati dell'elaborazione
+ * @param {Array} molecules - Molecole processate
+ * @param {Set} removedIds - ID molecole rimosse
+ * @param {Array} newMolecules - Nuove molecole create
+ * @param {number} initialReactionCount - Conteggio reazioni iniziale
+ * @returns {Object} Risultati elaborazione
+ */
+function prepareProcessedResults(molecules, removedIds, newMolecules, initialReactionCount) {
+    return {
+        // Aggiornamenti molecole
+        moleculeUpdates: molecules
+            .filter(mol => !removedIds.has(mol.id))
+            .map(mol => MoleculeSerializer.serialize(mol)),
+            
+        // Nuove molecole create
+        newMolecules: newMolecules.map(mol => 
+            MoleculeSerializer.serialize(mol)
+        ),
+        
+        // Numero reazioni avvenute
+        reactionCount: simulation.reactionCount - initialReactionCount,
+        
+        // Aggiornamenti relazioni
+        updatedRelationships: simulation.moleculeCache.getRelationshipsForMolecules(
+            molecules.filter(mol => !removedIds.has(mol.id))
+        )
+    };
+}
+
+/**
+ * Ottiene dati ottimizzati molecole per aggiornamento
+ * @param {Map} stablePositions - Posizioni stabilizzate
+ * @returns {Object} Dati ottimizzati
+ */
 function getOptimizedMoleculeData(stablePositions) {
     const currentMoleculeIds = new Set();
     const result = [];
@@ -3541,32 +3159,10 @@ function getOptimizedMoleculeData(stablePositions) {
     };
 }
 
-// Funzioni di supporto
-
-function propagateTemperature(value) {
-    // Propaga ai sub-worker
-    if (simulation.isMainWorker && simulation.subWorkers.length > 0) {
-        for (const subWorker of simulation.subWorkers) {
-            subWorker.worker.postMessage({
-                type: 'set_temperature',
-                value: value
-            });
-        }
-    }
-}
-
-function propagateTimeScale(value) {
-    // Propaga ai sub-worker
-    if (simulation.isMainWorker && simulation.subWorkers.length > 0) {
-        for (const subWorker of simulation.subWorkers) {
-            subWorker.worker.postMessage({
-                type: 'set_timescale',
-                value: value
-            });
-        }
-    }
-}
-
+/**
+ * Conta relazioni totali nella cache
+ * @returns {number} Numero totale relazioni
+ */
 function countTotalRelationships() {
     if (!simulation || !simulation.moleculeCache) return 0;
 
@@ -3577,6 +3173,83 @@ function countTotalRelationships() {
     return count;
 }
 
+/**
+ * Statistiche avanzate per il monitoraggio delle prestazioni
+ * @returns {Object} Statistiche prestazioni
+ */
+function getPerformanceStats() {
+    if (!simulation || !simulation.interactionManager) {
+        return {};
+    }
+    
+    return {
+        // Statistiche molecole
+        moleculeCount: simulation.molecules.length,
+        totalReactions: simulation.reactionCount,
+        
+        // Statistiche cache e calcoli
+        relationshipCacheSize: simulation.moleculeCache.moleculeRelationships.size,
+        totalCachedRelationships: countTotalRelationships(),
+        
+        // Statistiche ottimizzazione
+        calculationsAvoided: simulation.interactionManager.stats.calculationsAvoided,
+        totalCalculations: simulation.interactionManager.stats.totalCalculations,
+        cacheHits: simulation.interactionManager.stats.cacheHits,
+        
+        // Statistiche worker
+        workerCount: simulation.subWorkers.length,
+        busyWorkers: simulation.subWorkers.filter(w => w.busy).length,
+        
+        // Stato simulazione
+        isPaused: simulation.isPaused,
+        temperature: simulation.temperature,
+        elapsedTime: simulation.accumulatedTime
+    };
+}
+
+/**
+ * Invia aggiornamento migliorato con statistiche prestazioni
+ */
+function sendUpdate() {
+    try {
+        // Prepara dati usando posizioni stabili quando disponibili
+        const moleculeData = getOptimizedMoleculeData(simulation.stablePositions);
+        const perfStats = getPerformanceStats();
+
+        postMessage({
+            type: 'update',
+            molecules: moleculeData,
+            temperature: simulation.temperature,
+            reactionCount: simulation.reactionCount,
+            isPaused: simulation.isPaused,
+            
+            // Statistiche avanzate
+            stats: perfStats,
+            
+            workerStatus: simulation.subWorkers.map(worker => ({
+                id: worker.id,
+                busy: worker.busy,
+                lastProcessed: worker.lastProcessedMolecules
+            }))
+        });
+
+        // Ripristina posizioni fisiche reali dopo l'invio dell'aggiornamento
+        if (simulation.stablePositions.size > 0) {
+            simulation.restorePhysicsPositions();
+        }
+    } catch (error) {
+        console.error(`Worker ${workerId}: error sending update`, error);
+        postMessage({
+            type: 'error',
+            message: `Error sending update: ${error.message}`,
+            stack: error.stack
+        });
+    }
+}
+
+/**
+ * Pulisce risorse
+ */
 function cleanupResources() {
     if (simulation) {
         simulation.cleanup();
@@ -3589,4 +3262,39 @@ function cleanupResources() {
         type: 'cleanup_complete',
         workerId: workerId
     });
+}
+
+/**
+ * Funzione migliorata per inizializzazione
+ * @param {Object} message - Messaggio di inizializzazione
+ */
+async function handleInitialization(message) {
+    const { size, moleculeCount, maxNumber, timeScale } = message;
+    const rules = createCustomRules();
+    rules.setConstant('time_scale', timeScale || 0.1);
+
+    // Inizializza simulazione con versione ottimizzata
+    simulation = new OptimizedChemistry(rules, size, moleculeCount, maxNumber);
+    simulation.isMainWorker = !isSubWorker;
+    simulation.workerId = workerId;
+
+    console.log(`Worker ${workerId}: simulation initialized with ${moleculeCount} molecules, timeScale=${timeScale}`);
+
+    // Inizializza sub-worker
+    if (!isSubWorker) {
+        try {
+            await simulation.initializeSubWorkers();
+            console.log(`Initialized ${simulation.subWorkers.length} sub-workers`);
+        } catch (error) {
+            console.error("Failed to initialize sub-workers:", error);
+            // Continua in modalità single-worker
+        }
+    }
+
+    // Passo iniziale
+    await simulation.step();
+
+    if (!isSubWorker) {
+        sendUpdate();
+    }
 }
