@@ -777,3 +777,5 @@ function createCustomRules() {
         
         // Teniamo i numeri primi originali e aggiungiamo il campo quantistico
         return [mol1, mol2, quantumField];
+    }
+}
