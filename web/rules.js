@@ -37,7 +37,7 @@ class SimulationRules {
             'temperature_factor': 1.0,
             'quantum_strength': 0.2,
             'time_scale': 0.8,   // Rallentato per gravità più graduale
-            'repulsion_decay_time': 10000, // Tempo in ms per cui le particelle restano ripulsive
+            'repulsion_decay_time': 1000, // Tempo in ms per cui le particelle restano ripulsive
             'cooling_period': 100, // Tempo in ms durante il quale le molecole non reagiscono dopo una reazione
             'entropy_factor': 0.3, // Fattore di entropia per prevenire il collasso gravitazionale
             'family_repulsion': 1.0, // Intensità della repulsione tra "parenti"
