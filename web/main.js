@@ -30,7 +30,7 @@ let infoDiv, moleculeInfoDiv;
  * Main initialization function
  */
 function init() {
-  const spaceDimension = 200;
+  const spaceDimension = 150;
   
   // Scene setup
   scene = new THREE.Scene();
@@ -56,7 +56,7 @@ function init() {
   setupSceneHelpers(spaceDimension);
 
   // Initialize simulation
-  initializeSimulation(spaceDimension, 1, 100, 1);
+  initializeSimulation(spaceDimension, 2, 100, 1);
 
   // Make the simulation state globally accessible
   makeGloballyAccessible();
