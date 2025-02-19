@@ -30,7 +30,7 @@ let infoDiv, moleculeInfoDiv;
  * Main initialization function
  */
 function init() {
-  const spaceDimension = 500;
+  const spaceDimension = 100;
   
   // Scene setup
   scene = new THREE.Scene();
@@ -133,7 +133,7 @@ function createInfoContainers() {
 /**
  * Initialize the simulation
  */
-function initializeSimulation(size, moleculeCount = 20, maxNumber = 200, timeScale = 1.0) {
+function initializeSimulation(size, moleculeCount = 10, maxNumber = 200, timeScale = 1.0) {
   console.log("Initializing simulation...");
   
   // Terminate existing worker if present

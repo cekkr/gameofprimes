@@ -1195,6 +1195,7 @@ enforceBoundaries(molecule) {
 manageMoleculeCount() {
     // Limit molecule count for performance
     if (this.molecules.length > 300) {
+        // Attention! This is disabled
         // Remove excess molecules, preferring older ones
         //this.molecules = this.molecules.slice(this.molecules.length - 300);
     } else if (this.molecules.length < 50) {

@@ -50,6 +50,10 @@ export class PrimeMolecule {
         return this._color;
     }
 
+    set color(val) {
+        this._color = val;
+    }
+
     // More efficient factorization with memoization support
     factorize(n) {
         // Static cache for factorization results
