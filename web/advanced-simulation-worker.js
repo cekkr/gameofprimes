@@ -328,20 +328,50 @@ handleRemoteReaction(reaction) {
 }
 
 initializeMolecules(count) {
-    // Distribuzione di numeri più interessante
-    const numberChoices = [];
+    // Calcola i numeri primi fino a this.maxNumber con il Crivello di Eratostene
+    const calculatePrimes = (max) => {
+        const sieve = Array(max + 1).fill(true);
+        sieve[0] = sieve[1] = false;
+        
+        for (let i = 2; i * i <= max; i++) {
+            if (sieve[i]) {
+                for (let j = i * i; j <= max; j += i) {
+                    sieve[j] = false;
+                }
+            }
+        }
+        
+        return Array.from({ length: max + 1 }, (_, i) => i)
+            .filter(num => sieve[num]);
+    };
     
-    // Aggiungi numeri primi puri
-    const primes = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47];
+    // Genera i numeri primi e composti in base a this.maxNumber
+    const primes = calculatePrimes(this.maxNumber);
+    
+    // Genera i composti (numeri non primi) fino a this.maxNumber
+    const compounds = Array.from(
+        { length: this.maxNumber - 1 }, 
+        (_, i) => i + 2
+    ).filter(num => !primes.includes(num));
+    
+    // Distribuzione di numeri per le molecole
+    let numberChoices = [];
+    
+    // Aggiungi numeri primi
     numberChoices.push(...primes);
     
-    // Aggiungi qualche composto semplice
-    const compounds = [4, 6, 8, 9, 10, 12, 14, 15, 16, 18, 20, 21, 22, 24, 25, 27, 30];
+    // Aggiungi composti
     numberChoices.push(...compounds);
     
-    // Aggiungi qualche numero più grande
-    for (let i = 0; i < 10; i++) {
-        numberChoices.push(Math.floor(Math.random() * 90) + 50);
+    // Aggiungi alcuni numeri casuali più grandi se necessario
+    if (numberChoices.length < count * 2) {
+        const additionalCount = Math.min(10, count - numberChoices.length);
+        for (let i = 0; i < additionalCount; i++) {
+            const largeNumber = Math.floor(Math.random() * (this.maxNumber * 0.5)) + this.maxNumber * 0.5;
+            if (!numberChoices.includes(largeNumber)) {
+                numberChoices.push(largeNumber);
+            }
+        }
     }
     
     // Crea le molecole
@@ -356,9 +386,9 @@ initializeMolecules(count) {
         // Scegli un numero dalla distribuzione
         const number = numberChoices[Math.floor(Math.random() * numberChoices.length)];
     
-       // Crea molecola con ID stabile
-       const mol = new PrimeMolecule(number, pos);
-       mol.id = `initial-${this.nextMoleculeId++}`;
+        // Crea molecola con ID stabile
+        const mol = new PrimeMolecule(number, pos);
+        mol.id = `initial-${this.nextMoleculeId++}`;
         
         // Imposta velocità iniziale casuale
         mol.velocity = [
@@ -370,7 +400,7 @@ initializeMolecules(count) {
         this.molecules.push(mol);
     }
     
-    console.log(`Inizializzate ${this.molecules.length} molecole`);
+    console.log(`Inizializzate ${this.molecules.length} molecole (Primi: ${primes.length}, Composti: ${compounds.length})`);
     
     // Initialize spatial grid with molecules
     this.updateSpatialGrid();
@@ -1166,7 +1196,7 @@ manageMoleculeCount() {
     // Limit molecule count for performance
     if (this.molecules.length > 300) {
         // Remove excess molecules, preferring older ones
-        this.molecules = this.molecules.slice(this.molecules.length - 300);
+        //this.molecules = this.molecules.slice(this.molecules.length - 300);
     } else if (this.molecules.length < 50) {
         // Add molecules if there are too few
         this.addRandomMolecules(50 - this.molecules.length);
@@ -1861,30 +1891,30 @@ try {
 }
 
 function getOptimizedMoleculeData() {
-const currentMoleculeIds = new Set();
-const result = [];
+    const currentMoleculeIds = new Set();
+    const result = [];
 
-// Serialize each molecule with all required properties
-for (const mol of simulation.molecules) {
-    // Ensure each molecule has an ID
-    const id = mol.id || `mol-${Math.random().toString(36).substring(2, 11)}`;
-    mol.id = id;
-    currentMoleculeIds.add(id);
-    
-    // Use serialization helper to ensure all required properties are included
-    result.push(MoleculeSerializer.serialize(mol));
-}
+    // Serialize each molecule with all required properties
+    for (const mol of simulation.molecules) {
+        // Ensure each molecule has an ID
+        const id = mol.id || `mol-${Math.random().toString(36).substring(2, 11)}`;
+        mol.id = id;
+        currentMoleculeIds.add(id);
+        
+        // Use serialization helper to ensure all required properties are included
+        result.push(MoleculeSerializer.serialize(mol));
+    }
 
-// Calculate removed molecules
-const removedIds = [...previousMoleculeIds].filter(id => !currentMoleculeIds.has(id));
+    // Calculate removed molecules
+    const removedIds = [...previousMoleculeIds].filter(id => !currentMoleculeIds.has(id));
 
-// Update set for next frame
-previousMoleculeIds = currentMoleculeIds;
+    // Update set for next frame
+    previousMoleculeIds = currentMoleculeIds;
 
-return {
-    molecules: result,
-    removedIds: removedIds
-};
+    return {
+        molecules: result,
+        removedIds: removedIds
+    };
 }
 
 function cleanupResources() {
