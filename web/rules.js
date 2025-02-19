@@ -29,7 +29,7 @@ class SimulationRules {
         this.interaction_rules = [];
         this.reaction_rules = [];
         this.constants = {
-            'G': 0.1,           // Costante gravitazionale (ridotta per renderla più debole)
+            'G': 0.01,           // Costante gravitazionale (ridotta per renderla più debole)
             'k': 2.0,            // Costante elettrostatica
             'min_distance': 0.01, // Distanza minima per evitare singolarità
             'max_force': 10.0,   // Forza massima applicabile

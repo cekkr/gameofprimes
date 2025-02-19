@@ -143,7 +143,7 @@ function initializeSimulation(size, moleculeCount = 5, maxNumber = 200, timeScal
 
   try {
     // Create worker
-    simulationWorker = new Worker(new URL('./simulation-worker.js', import.meta.url), {
+    simulationWorker = new Worker(new URL('./simulation-worker-gpu.js', import.meta.url), {
       type: 'module'
     });
     
