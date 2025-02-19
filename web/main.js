@@ -428,7 +428,7 @@ function bindControlEvents() {
 
 // MODIFICARE: Sovrascrivere la funzione init per chiamare setupUserInterface dopo la creazione del renderer
 function init() {
-    const spaceDimension = 10;
+    const spaceDimension = 50;
 
     // Scene setup
     scene = new THREE.Scene();

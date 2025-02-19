@@ -95,7 +95,7 @@ class EnhancedChemistry {
         }
         
         // Limita il numero di molecole per prestazioni
-        if (this.molecules.length > 300) {
+        if (this.molecules.length > 300 && false) { //todo: parametrized it
             // Rimuovi molecole in eccesso preferendo quelle più vecchie
             this.molecules = this.molecules.slice(this.molecules.length - 300);
         } else if (this.molecules.length < 50) {
