@@ -1,40 +1,90 @@
 // molecule.js
+
 export class PrimeMolecule {
     constructor(number, position) {
+        this.id = null; // Will be assigned by PrimeChemistry
         this.number = number;
         this.position = position;
-        this.velocity = [0, 0, 0]; // Initialized to zero, will be set in PrimeChemistry
+        this.velocity = [0, 0, 0]; 
         this.acceleration = [0, 0, 0];
-        this.prime_factors = this.factorize(number);
-        this.mass = Math.log2(number) * 2;
-        this.charge = this.calculate_charge();
-        this.color = this.generate_color();
-        this.lastReactionTime = -Infinity; // For halo effect
-
-        // Ensure angular velocity is initialized here
+        this._primeFactors = null; // Lazy load
+        this._mass = null; // Lazy load
+        this._charge = null; // Lazy load  
+        this._color = null; // Lazy load
+        this.lastReactionTime = -Infinity;
+        
+        // Ensure angular velocity is initialized
         this.angularVelocity = [
-            (Math.random() - 0.5) * 0.2,  // Adjust range as needed
+            (Math.random() - 0.5) * 0.2,
             (Math.random() - 0.5) * 0.2,
             (Math.random() - 0.5) * 0.2
         ];
     }
 
+    // Lazy-loaded getters
+    get prime_factors() {
+        if (!this._primeFactors) {
+            this._primeFactors = this.factorize(this.number);
+        }
+        return this._primeFactors;
+    }
+    
+    get mass() {
+        if (this._mass === null) {
+            this._mass = Math.log2(this.number) * 2;
+        }
+        return this._mass;
+    }
+    
+    get charge() {
+        if (this._charge === null) {
+            this._charge = this.calculate_charge();
+        }
+        return this._charge;
+    }
+    
+    get color() {
+        if (!this._color) {
+            this._color = this.generate_color();
+        }
+        return this._color;
+    }
+
+    // More efficient factorization with memoization support
     factorize(n) {
+        // Static cache for factorization results
+        if (!PrimeMolecule.factorCache) {
+            PrimeMolecule.factorCache = new Map();
+        }
+        
+        // Check cache first
+        if (PrimeMolecule.factorCache.has(n)) {
+            return { ...PrimeMolecule.factorCache.get(n) }; // Return copy to avoid mutations
+        }
+        
         const factors = {};
         let d = 2;
-        while (n > 1) {
-            while (n % d === 0) {
+        let remaining = n;
+        
+        while (remaining > 1) {
+            while (remaining % d === 0) {
                 factors[d] = (factors[d] || 0) + 1;
-                n /= d;
+                remaining /= d;
             }
             d += 1;
-            if (d * d > n) {
-                if (n > 1) {
-                    factors[n] = (factors[n] || 0) + 1;
+            if (d * d > remaining) {
+                if (remaining > 1) {
+                    factors[remaining] = (factors[remaining] || 0) + 1;
                 }
                 break;
             }
         }
+        
+        // Cache the result (only for smaller numbers to avoid memory bloat)
+        if (n < 10000) {
+            PrimeMolecule.factorCache.set(n, { ...factors });
+        }
+        
         return factors;
     }
 
@@ -58,33 +108,47 @@ export class PrimeMolecule {
             return [0.5, 0.5, 0.5]; // Gray for 1
         }
 
+        // Cache HSV to RGB conversions
+        if (!PrimeMolecule.hsvCache) {
+            PrimeMolecule.hsvCache = new Map();
+        }
+
         let h = 0;
         let s = 0;
         let v = 0;
 
-        const primes = Object.keys(this.prime_factors).map(Number).sort((a, b) => a - b); // Sorted primes
+        // Get the primes sorted for consistent coloring
+        const primes = Object.keys(this.prime_factors).map(Number).sort((a, b) => a - b);
+        
         for (let i = 0; i < primes.length; i++) {
             const prime = primes[i];
             const count = this.prime_factors[prime];
 
-            // Use golden ratio for hue, but offset by index to further differentiate
             h += (0.618033988749895 * prime) + (i * 0.1);
             h %= 1; // Keep hue within 0-1
 
-            s += count / (1 + Math.log(Math.max(...primes))); // Saturation based on count
-            v += 1 / (1 + Math.log(prime));  // Value based on prime
+            s += count / (1 + Math.log(Math.max(...primes)));
+            v += 1 / (1 + Math.log(prime));
         }
-         s = Math.min(1, s); //Ensure s and v stays between 0 and 1
-         v = Math.min(1,v);
+        
+        // Ensure values stay between 0 and 1
+        s = Math.min(1, s);
+        v = Math.min(1, v);
+
+        // Check if we've cached this HSV combination
+        const key = `${h.toFixed(3)}_${s.toFixed(3)}_${v.toFixed(3)}`;
+        if (PrimeMolecule.hsvCache.has(key)) {
+            return [...PrimeMolecule.hsvCache.get(key)]; // Return copy
+        }
 
         // Convert HSV to RGB
-        let r, g, b;
         const i = Math.floor(h * 6);
         const f = h * 6 - i;
         const p = v * (1 - s);
         const q = v * (1 - s * f);
         const t = v * (1 - s * (1 - f));
 
+        let r, g, b;
         switch (i % 6) {
             case 0: r = v, g = t, b = p; break;
             case 1: r = q, g = v, b = p; break;
@@ -93,14 +157,23 @@ export class PrimeMolecule {
             case 4: r = t, g = p, b = v; break;
             case 5: r = v, g = p, b = q; break;
         }
-        return [r, g, b];
+        
+        const result = [r, g, b];
+        
+        // Cache the result (limit cache size to prevent memory bloat)
+        if (PrimeMolecule.hsvCache.size < 1000) {
+            PrimeMolecule.hsvCache.set(key, [...result]);
+        }
+        
+        return result;
     }
+
     setReactionTime(time) {
         this.lastReactionTime = time;
     }
 
     getHaloColor() {
-        //  alpha based on time since last reaction
+        // Calculate alpha based on time since last reaction
         const timeSinceReaction = performance.now() - this.lastReactionTime;
         const alpha = Math.max(0, 1 - timeSinceReaction / 1000); // Fade out over 1 second
         return [...this.color, alpha]; // Return color with alpha
@@ -108,9 +181,24 @@ export class PrimeMolecule {
 
     getHaloSize() {
         const timeSinceReaction = performance.now() - this.lastReactionTime;
-        const size = 0.4 + 0.1 * Math.log2(this.number)
+        const size = 0.4 + 0.1 * Math.log2(this.number);
         const factor = Math.max(0, 1 - timeSinceReaction/500); // Shrink
         return size * (1 + factor);
-
+    }
+    
+    // Clean up instance for garbage collection
+    dispose() {
+        this._primeFactors = null;
+        this._color = null;
+    }
+    
+    // Static method to clear caches
+    static clearCaches() {
+        if (PrimeMolecule.factorCache) {
+            PrimeMolecule.factorCache.clear();
+        }
+        if (PrimeMolecule.hsvCache) {
+            PrimeMolecule.hsvCache.clear();
+        }
     }
 }
