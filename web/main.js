@@ -198,8 +198,9 @@ function handleWorkerMessage(event) {
   
   switch (data.type) {
     case 'update':
-      handleUpdateMessage(data);
-      break;
+        console.log("main.js mols update:", data);
+        handleUpdateMessage(data);
+        break;
       
     case 'cleanup_complete':
       console.log('Worker cleanup completed');
@@ -1456,6 +1457,11 @@ function onKeyDown(event) {
     case 'KeyR': // Reset Camera
       controls.reset();
       break;
+
+    case 'KeyS':
+        simulationWorker.postMessage({ type: 'step' });
+        console.log("Requested forced step");
+        break;
       
     case 'ArrowRight':
       if (paused && simulationWorker) {

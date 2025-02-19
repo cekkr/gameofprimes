@@ -160,18 +160,18 @@ class MoleculeSerializer {
      * Aggiorna solo proprietà che possono essere modificate in sicurezza
      */
     static updateMoleculeProperties(molecule, updateData) {
-        // Aggiorna posizione se fornita
-        if (updateData.position && Array.isArray(updateData.position)) {
+        // Aggiorna posizione se fornita e valida
+        if (updateData.position && Array.isArray(updateData.position) && updateData.position.length === 3) {
             molecule.position = [...updateData.position];
         }
 
-        // Aggiorna velocità se fornita
-        if (updateData.velocity && Array.isArray(updateData.velocity)) {
+        // Aggiorna velocità se fornita e valida
+        if (updateData.velocity && Array.isArray(updateData.velocity) && updateData.velocity.length === 3) {
             molecule.velocity = [...updateData.velocity];
         }
 
-        // Aggiorna velocità angolare se fornita
-        if (updateData.angularVelocity && Array.isArray(updateData.angularVelocity)) {
+        // Aggiorna velocità angolare se fornita e valida
+        if (updateData.angularVelocity && Array.isArray(updateData.angularVelocity) && updateData.angularVelocity.length === 3) {
             molecule.angularVelocity = [...updateData.angularVelocity];
         }
 
@@ -180,7 +180,7 @@ class MoleculeSerializer {
             molecule.lastReactionTime = updateData.lastReactionTime;
         }
 
-        // Aggiorna proprietà di relazione
+        // Aggiorna proprietà di relazione (con controllo di esistenza)
         if (updateData.parentIds && Array.isArray(updateData.parentIds)) {
             molecule.parentIds = [...updateData.parentIds];
         }
@@ -189,12 +189,12 @@ class MoleculeSerializer {
             molecule.reactionType = updateData.reactionType;
         }
 
-        // Aggiorna posizione fisica se fornita
-        if (updateData._physicsPosition && Array.isArray(updateData._physicsPosition)) {
+        // Aggiorna posizione fisica se fornita e valida
+        if (updateData._physicsPosition && Array.isArray(updateData._physicsPosition) && updateData._physicsPosition.length === 3) {
             molecule._physicsPosition = [...updateData._physicsPosition];
         }
 
-        // Aggiorna proprietà campo quantico
+        // Aggiorna proprietà campo quantico (con controlli di esistenza e tipo)
         if (updateData._isQuantumField) {
             molecule._isQuantumField = true;
             molecule._creationTime = updateData._creationTime;
@@ -250,6 +250,8 @@ class EnhancedChemistry {
 
         // Inizializza molecole con distribuzione interessante
         this.initializeMolecules(moleculeCount);
+
+        this.step_in_progress = false;
     }
 
     /**
@@ -332,7 +334,7 @@ class EnhancedChemistry {
     }
 
 
-      /**
+    /**
      * Unisce i risultati elaborati dai sub-worker con gestione dei conflitti e ottimizzazioni.
      * @param {Object} results - Risultati dal worker.
      * @param {Array} processedIds - Array di ID delle molecole effettivamente elaborate dal worker.
@@ -358,34 +360,40 @@ class EnhancedChemistry {
                 }
                 const updateInfo = molecule._lastUpdateInfo;
 
-                // Gestione differenziata in base al tipo di proprietà della molecola.
+
                 if (processedMoleculeIds.has(update.id)) {
                     // 1. La molecola è stata elaborata *direttamente* da questo worker.
                     updateInfo.timestamp = timestamp;
-                    // Aggiorna direttamente, senza media pesata, dato che è un aggiornamento diretto.
+                    // Aggiorna direttamente, senza media pesata
                     MoleculeSerializer.updateMoleculeProperties(molecule, update);
                 } else {
-                    // 2. La molecola è stata influenzata *indirettamente* (es. interazione con un'altra molecola).
-                    const timeSinceUpdate = timestamp - updateInfo.timestamp;
-                    if (timeSinceUpdate < 50) { // Soglia per aggiornamenti concorrenti (50ms).
+                    // 2. La molecola è stata influenzata *indirettamente*.
+
+                    // Usa un controllo più preciso sulla concorrenza, usando updateInfo.timestamp
+                    const timeSinceUpdate = timestamp - (updateInfo.timestamp || 0);  //usa 0 come fallback se timestamp e' undefined
+                    if (timeSinceUpdate < 50) {
                         recentlyUpdated.set(update.id, true);
 
                         // Applica media pesata *solo* a posizione e velocità.
-                      
                         const currentPos = molecule.position;
                         const newPos = update.position;
-
                         const currentVel = molecule.velocity;
                         const newVel = update.velocity;
 
-                        // Media pesata: i nuovi valori contribuiscono.
-                        const currentWeight = 0.6;
-                        const newWeight = 0.4;
 
-                        for (let i = 0; i < 3; i++) {
-                            molecule.position[i] = currentPos[i] * currentWeight + newPos[i] * newWeight;
-                            molecule.velocity[i] = currentVel[i] * currentWeight + newVel[i] * newWeight;
+                       // Verifica che newPos e newVel siano array validi
+                        if (Array.isArray(newPos) && newPos.length === 3 && Array.isArray(newVel) && newVel.length === 3)
+                        {
+                            // Media pesata: i nuovi valori contribuiscono.
+                            const currentWeight = 0.6;
+                            const newWeight = 0.4;
+
+                            for (let i = 0; i < 3; i++) {
+                                molecule.position[i] = currentPos[i] * currentWeight + newPos[i] * newWeight;
+                                molecule.velocity[i] = currentVel[i] * currentWeight + newVel[i] * newWeight;
+                            }
                         }
+
 
                         updateInfo.mergeCount++; // Incrementa contatore fusioni.
                     } else {
@@ -435,7 +443,7 @@ class EnhancedChemistry {
         }
 
         // Aggiorna la vista *solo* dopo aver processato tutti gli aggiornamenti.
-        sendUpdate();
+        // sendUpdate();  // RIMOSSO DA QUI, spostato in step()
     }
 
 
@@ -674,6 +682,9 @@ handleRemoteReaction(reaction) {
     /**
      * Esegue un passo della simulazione
      */
+        /**
+     * Esegue un passo della simulazione
+     */
     async step() {
         // Se in pausa, non aggiornare fisica
         if (this.isPaused) {
@@ -683,8 +694,11 @@ handleRemoteReaction(reaction) {
             return;
         }
 
+        if(this.step_in_progress) return;
+
         // Imposta flag aggiornamento in corso
         this.updateInProgress = true;
+        this.step_in_progress = true;
 
         const timeScale = this.rules.getConstant('time_scale');
         this.accumulatedTime += timeScale;
@@ -704,17 +718,20 @@ handleRemoteReaction(reaction) {
             this.updatePhysicsWithMoleculeCache(this.molecules, removedIndices, newMolecules);
         }
 
-        // Filtra molecole rimosse
+
+        // Filtra molecole rimosse usando gli ID, non gli indici
         if (removedIndices.size > 0) {
-            // Correzione: Rimuovi usando gli ID, non gli indici, dato che gli indici cambiano dopo ogni rimozione.
             const removedIds = new Set([...removedIndices].map(index => this.molecules[index].id));
             this.molecules = this.molecules.filter(mol => !removedIds.has(mol.id));
         }
 
-        // Aggiungi nuove molecole
-        for (const mol of newMolecules) {
-            mol.id = `new-${this.nextMoleculeId++}`;
-            this.molecules.push(mol);
+
+        // Aggiungi nuove molecole  --  DISABILITATO, il codice originale aveva un if(false)
+        if(false){
+            for (const mol of newMolecules) {
+                mol.id = `new-${this.nextMoleculeId++}`;
+                this.molecules.push(mol);
+            }
         }
 
         // Reset tempo accumulato
@@ -744,21 +761,22 @@ handleRemoteReaction(reaction) {
         // Aggiornamento completato
         this.updateInProgress = false;
 
-      // Invia aggiornamento *dopo* aver stabilizzato le posizioni (se necessario).
+        // Invia aggiornamento *dopo* aver stabilizzato le posizioni (se necessario).
         if (this.isMainWorker) {
-            if (this.pendingPositionUpdate) {
-                this.stabilizePositions();
-                sendUpdate();
-                this.pendingPositionUpdate = false;  // Resetta il flag.
+                if (this.pendingPositionUpdate) {
+                this.stabilizePositions(); // Calcola le posizioni medie
+                sendUpdate();  // Invia l'aggiornamento alla UI
+                this.pendingPositionUpdate = false;  // Resetta il flag
             } else {
-                // Imposta il flag per il prossimo ciclo.
                 this.pendingPositionUpdate = true;
             }
 
-            // Resetta *sempre* gli accumulatori, anche se non abbiamo inviato un aggiornamento.
+            // SEMPRE reset degli accumulatori.
             this.positionAccumulators.clear();
             this.positionSampleCount.clear();
         }
+
+        this.step_in_progress = false; //CORRETTO: aggiunto reset del flag
     }
 
     /**
@@ -3517,9 +3535,6 @@ onmessage = async function(event) {
 
             case 'step':
                 await simulation.step();
-                if (!isSubWorker) {
-                    sendUpdate();
-                }
                 break;
 
             case 'cleanup':
@@ -3845,7 +3860,7 @@ function prepareProcessedResults(molecules, removedIds, newMolecules, initialRea
           molecules.filter(mol => !removedIds.has(mol.id))
         ),
         processedMoleculeIds: [...directlyProcessedIds], // Converti in array.
-        timestamp: performance.now()
+        timestamp: performance.now() //Aggiunto timestamp
     };
 }
 
@@ -3868,7 +3883,7 @@ function sendProcessedChunkResult(results, processedCount) {
  * @param {Object} mol1 - Prima molecola
  * @param {Object} mol2 - Seconda molecola
  * @param {number} distance - Distanza tra molecole
- * @param {Set} removedIndices - Set per indici rimossi
+ * @param {Set} removedIndices - Set per indici rimossi  -- MODIFICATO, ora contiene ID
  * @param {Array} newMolecules - Array per nuove molecole
  */
 function processReactionIfNeeded(mol1, mol2, distance, removedIndices, newMolecules) {
@@ -3878,12 +3893,7 @@ function processReactionIfNeeded(mol1, mol2, distance, removedIndices, newMolecu
             if (products.length > 0) {
                 newMolecules.push(...products);
 
-                // Aggiungi a indici da rimuovere
-                // const mol1Index = simulation.molecules.findIndex(m => m.id === mol1.id); //NON SERVE PIù CERCARE L'INDICE QUI
-                // const mol2Index = simulation.molecules.findIndex(m => m.id === mol2.id);
-
-                // if (mol1Index >= 0) removedIndices.add(mol1.id); //MODIFICATO PER USARE ID
-                // if (mol2Index >= 0) removedIndices.add(mol2.id);
+                // Aggiungi a indici da rimuovere -- MODIFICATO, ora usa gli ID
                 removedIndices.add(mol1.id);
                 removedIndices.add(mol2.id);
 
@@ -4042,6 +4052,9 @@ function sendUpdate() {
         if (simulation.stablePositions.size > 0) {
             simulation.restorePhysicsPositions();
         }
+
+        simulation.step_in_progress = false;
+
     } catch (error) {
         console.error(`Worker ${workerId}: error sending update`, error);
         postMessage({
