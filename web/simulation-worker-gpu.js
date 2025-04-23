@@ -230,6 +230,8 @@ class EnhancedChemistry {
         this.reactionCount = 0;
         this.isPaused = false;
 
+        this.useRandomInteractionsStep = true
+
         // Inizializza sub-worker
         this.subWorkers = [];
         this.isMainWorker = true;
@@ -1063,6 +1065,16 @@ handleRemoteReaction(reaction) {
                 // Rimetti indietro se non troppo piccolo
                 clusters.push(smallest);
                 break;
+            }
+        }
+
+        if(this.useRandomInteractionsStep){
+            for(let c in clusters){
+                for(let couple in clusters[c]){
+                    if(couple % 2 == 0){
+                        delete clusters[c][couple];
+                    }
+                }
             }
         }
     }

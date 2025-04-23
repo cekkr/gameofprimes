@@ -2276,6 +2276,8 @@ let workerId = 'main';
  */
 class MoleculeInteractionManager {
     constructor() {
+        this.useRandomInteractionsStep = true
+
         // Mappa delle interazioni già calcolate (evita ridondanza)
         this.calculatedPairs = new Set();
 
