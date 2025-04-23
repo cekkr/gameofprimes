@@ -1071,7 +1071,7 @@ handleRemoteReaction(reaction) {
         if(this.useRandomInteractionsStep){
             for(let c in clusters){
                 for(let couple in clusters[c]){
-                    if(couple % 2 == 0){
+                    if(couple % 3 != 0){
                         delete clusters[c][couple];
                     }
                 }
