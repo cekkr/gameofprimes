@@ -2375,6 +2375,10 @@ class MoleculeInteractionManager {
      * @returns {Array} - Il piano di lavoro aggiornato e suddiviso per worker.
      */
     updateMoleculeWorkerAssignments(molecules, workerCount, workPlan = []) {
+        if(true){ // this.trucateMoleculesAssingments
+            molecules.splice(0, molecules.length / 2);
+        }
+
         const currentMoleculeIds = new Set(molecules.map(mol => mol.id));
 
         // 1. Rimuovi le molecole non più presenti.
