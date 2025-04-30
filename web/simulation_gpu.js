@@ -243,7 +243,7 @@ function createShaderCode(rules) {
             return charge;
         }
 
-        fn resonance_force(direction_normalized: vec3<f32>, distance: f32, mass1: f32, mass2: f32) -> vec3<f32> {
+       fn resonance_force(direction_normalized: vec3<f32>, distance: f32, mass1: f32, mass2: f32) -> vec3<f32> {
             let orbital = cross(direction_normalized, vec3<f32>(0.0, 1.0, 0.0));
             let norm = length(orbital);
 
@@ -252,6 +252,21 @@ function createShaderCode(rules) {
                 return orbital * massEffect / (distance * distance * distance + 0.1); //Prevent too large forces
             }
             return vec3<f32>(0.0, 0.0, 0.0);
+        }
+
+        fn prime_resonance_condition(factors1: array<u32, 10>, factors2: array<u32, 10>, charge1: f32, charge2: f32) -> bool {
+            // Rename 'shared' to 'common' since 'shared' is a reserved keyword
+            const common = count_common_factors(factors1, factors2);
+            
+            // Rest of your implementation
+            // (You didn't provide the full function body)
+            return false; // Replace with your actual implementation
+        }
+
+        fn prime_resonance_force(direction_normalized: vec3<f32>, distance: f32, mass1: f32, mass2: f32, charge1: f32, charge2: f32) -> vec3<f32> {
+            // Your implementation goes here
+            // (You didn't provide the full function body)
+            return vec3<f32>(0.0, 0.0, 0.0); // Replace with your actual implementation
         }
 
         fn cross(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
