@@ -2,16 +2,19 @@
 
 Prime-factor chemistry simulation with two visual modes:
 
-- `territory` (default): 2D economy view with resource map, extraction heat, movement vectors, and wealth gradient.
+- `territory` (default): 2D chemistry-field view with resource map, extraction heat, movement vectors, and energy gradient.
 - `3d`: original OpenGL molecule view.
 
 ## Features
 
 - Prime-number based molecules with interaction and reaction rules.
+- Index-based molecular mass: `mass = Σ(prime_index * exponent)`.
+- Prime chemistry force field with:
+  same-prime repulsion, even-index attraction, odd-index repulsion, mixed-parity orbital coupling, and recursive fractal polarization.
 - Population dynamics with fusion/fission/decomposition.
 - Territory resource extraction and regeneration.
 - Dynamic growth zones that move, relocate, and change count over time.
-- Per-agent wealth tracking with real-time color gradient.
+- Per-agent extracted-energy tracking with real-time color gradient.
 - Tunable growth profiles: `slow`, `normal`, `fast`.
 
 ## Requirements
@@ -54,15 +57,15 @@ python3 main.py --fps 60
 Run denser or wider worlds:
 
 ```bash
-python3 main.py --size 120 --molecules 260
+python3 main.py --size 120 --molecules 200
 python3 main.py --size 180 --molecules 500
 ```
 
 Tune performance/physics tradeoff:
 
 ```bash
-python3 main.py --interaction-distance 34
-python3 main.py --interaction-distance 24   # faster, more local
+python3 main.py --interaction-distance 26
+python3 main.py --interaction-distance 20   # faster, more local
 python3 main.py --interaction-distance 0    # unlimited (slowest)
 ```
 

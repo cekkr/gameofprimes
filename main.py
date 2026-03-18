@@ -170,6 +170,61 @@ def load_default_font(size: int) -> UIFont:
     return UIFont('bitmap', BitmapFont(size), size)
 
 
+_PRIME_VALUE_CACHE: List[int] = [2]
+_PRIME_INDEX_CACHE: Dict[int, int] = {2: 1}
+
+
+def _is_prime_candidate(value: int) -> bool:
+    if value < 2:
+        return False
+    if value % 2 == 0:
+        return value == 2
+    limit = int(math.isqrt(value))
+    divisor = 3
+    while divisor <= limit:
+        if value % divisor == 0:
+            return False
+        divisor += 2
+    return True
+
+
+def prime_index(prime_value: int) -> int:
+    """Return 1-based index of the prime value (2->1, 3->2, 5->3...)."""
+    cached = _PRIME_INDEX_CACHE.get(prime_value)
+    if cached is not None:
+        return cached
+
+    candidate = _PRIME_VALUE_CACHE[-1] + 1
+    while _PRIME_VALUE_CACHE[-1] < prime_value:
+        if _is_prime_candidate(candidate):
+            _PRIME_VALUE_CACHE.append(candidate)
+            _PRIME_INDEX_CACHE[candidate] = len(_PRIME_VALUE_CACHE)
+        candidate += 1
+
+    if _PRIME_VALUE_CACHE[-1] != prime_value:
+        raise ValueError(f"{prime_value} is not prime")
+    return _PRIME_INDEX_CACHE[prime_value]
+
+
+def factorize_integer(value: int) -> Dict[int, int]:
+    factors: Dict[int, int] = defaultdict(int)
+    if value < 2:
+        return dict(factors)
+
+    divisor = 2
+    n = value
+    while n > 1:
+        while n % divisor == 0:
+            factors[divisor] += 1
+            n //= divisor
+        divisor += 1
+        if divisor * divisor > n:
+            if n > 1:
+                factors[n] += 1
+            break
+    return dict(factors)
+
+
 @dataclass
 class InteractionRule:
     """Defines how molecules interact based on their prime factors"""
@@ -237,7 +292,13 @@ class SimulationRules:
             'threading_pairwork_threshold': 180000.0,
             'region_partitions': 4.0,
             'interaction_region_range': 1.0,
-            'interaction_distance': 34.0,
+            'interaction_distance': 26.0,
+            'shared_prime_repulsion': 4.2,
+            'even_index_attraction': 2.1,
+            'odd_index_repulsion': 1.8,
+            'mixed_parity_orbital': 1.4,
+            'fractal_polarization': 2.0,
+            'fractal_torsion': 1.1,
             'growth_zone_speed': 14.0,
             'growth_zone_jitter': 2.0,
             'growth_zone_radius': 8.0,
@@ -347,36 +408,86 @@ class PrimeMolecule:
         # Non-zero initial motion prevents dead starts and helps early encounters.
         self.velocity = np.random.normal(0.0, 0.9, 3)
         self.acceleration = np.zeros(3)
-        self.prime_factors = self.factorize(number)
-        self.mass = math.log2(number) * 2
-        self.charge = self.calculate_charge()
-        self.color = self.generate_color()
+        self.prime_factors: Dict[int, int] = {}
+        self.prime_indices: Dict[int, int] = {}
+        self.mass = 0.0
+        self.even_index_weight = 0.0
+        self.odd_index_weight = 0.0
+        self.fractal_signature = np.zeros(3, dtype=float)
+        self.charge = 0.0
+        self.color = (0.5, 0.5, 0.5)
+        self.refresh_derived_properties()
         self.wealth = max(0.05, self.mass * random.uniform(0.2, 0.9))
 
     def factorize(self, n):
-        factors = defaultdict(int)
-        d = 2
-        while n > 1:
-            while n % d == 0:
-                factors[d] += 1
-                n //= d
-            d += 1
-            if d * d > n:
-                if n > 1:
-                    factors[n] += 1
-                break
-        return dict(factors)
+        return factorize_integer(n)
+
+    def refresh_derived_properties(self):
+        self.prime_factors = self.factorize(max(2, int(self.number)))
+        self.prime_indices = {prime: prime_index(prime) for prime in self.prime_factors}
+        self.mass = self.calculate_mass()
+        self.even_index_weight, self.odd_index_weight = self.calculate_parity_weights()
+        self.fractal_signature = self.build_fractal_signature(depth=3)
+        self.charge = self.calculate_charge()
+        self.color = self.generate_color()
+
+    def calculate_mass(self) -> float:
+        # Mass uses prime indexes: sum(index(prime) * exponent).
+        return float(sum(self.prime_indices[prime] * count for prime, count in self.prime_factors.items()))
+
+    def calculate_parity_weights(self) -> Tuple[float, float]:
+        even_weight = 0.0
+        odd_weight = 0.0
+        for prime, count in self.prime_factors.items():
+            index_value = self.prime_indices[prime] * count
+            if self.prime_indices[prime] % 2 == 0:
+                even_weight += index_value
+            else:
+                odd_weight += index_value
+        return even_weight, odd_weight
+
+    def _recursive_index_scalar(self, index_value: int, depth: int) -> float:
+        if depth <= 0 or index_value < 2:
+            return float(index_value)
+
+        factors = factorize_integer(index_value)
+        if not factors:
+            return float(index_value)
+
+        next_index = 0.0
+        total_weight = 0.0
+        for factor_prime, count in factors.items():
+            next_index += prime_index(factor_prime) * count
+            total_weight += count
+        if total_weight <= 0:
+            return float(index_value)
+        averaged = next_index / total_weight
+        return float(index_value) + 0.5 * self._recursive_index_scalar(max(2, int(round(averaged))), depth - 1)
+
+    def build_fractal_signature(self, depth: int = 3) -> np.ndarray:
+        signature = np.zeros(3, dtype=float)
+        for prime, count in self.prime_factors.items():
+            index_value = self.prime_indices[prime]
+            recursive_scalar = self._recursive_index_scalar(index_value, depth)
+            weighted = recursive_scalar * count
+            signature[0] += math.sin(weighted * 0.31)
+            signature[1] += math.cos(weighted * 0.53)
+            signature[2] += math.sin(weighted * 0.17 + index_value)
+
+        norm = np.linalg.norm(signature)
+        if norm > 1e-8:
+            signature /= norm
+        return signature
 
     def calculate_charge(self):
-        charge = 0
+        charge = 0.0
         for prime, count in self.prime_factors.items():
-            if prime == 2:
-                charge += count * 2
-            elif prime % 4 == 1:
-                charge += count
-            else:
-                charge -= count
-        return charge / (1 + math.log(self.number))
+            index_value = self.prime_indices[prime]
+            sign = 1.0 if index_value % 2 == 0 else -1.0
+            charge += sign * index_value * count
+
+        fractal_bias = float(self.fractal_signature[0] - self.fractal_signature[1])
+        return charge / (1.0 + self.mass) + 0.35 * fractal_bias
 
     def generate_color(self):
         if not self.prime_factors:
@@ -705,7 +816,6 @@ class PrimeChemistry:
                                 if distance < reaction_distance:
                                     candidates.append((distance, i, j))
 
-        candidates.sort(key=lambda value: value[0])
         return candidates
 
     def step(self):
@@ -966,6 +1076,56 @@ class PrimeChemistry:
             return 0.0
         return float(np.std(wealth_values) / mean_value)
 
+    def prime_fractal_force(self, mol1: PrimeMolecule, mol2: PrimeMolecule,
+                            direction_normalized: np.ndarray, distance: float) -> np.ndarray:
+        """Chemistry-inspired force field from prime indexes and recursive signatures."""
+        softened = distance + 0.4
+        inv_sq = 1.0 / (softened * softened)
+        inv_soft = 1.0 / (softened * math.sqrt(softened))
+        total_mass = max(1e-6, mol1.mass + mol2.mass)
+
+        shared_overlap = 0.0
+        for prime, count1 in mol1.prime_factors.items():
+            count2 = mol2.prime_factors.get(prime, 0)
+            if count2 <= 0:
+                continue
+            shared_overlap += mol1.prime_indices[prime] * min(count1, count2)
+
+        even_coupling = (mol1.even_index_weight * mol2.even_index_weight) / ((1.0 + mol1.mass) * (1.0 + mol2.mass))
+        odd_coupling = (mol1.odd_index_weight * mol2.odd_index_weight) / ((1.0 + mol1.mass) * (1.0 + mol2.mass))
+        mixed_coupling = (
+            mol1.even_index_weight * mol2.odd_index_weight +
+            mol1.odd_index_weight * mol2.even_index_weight
+        ) / ((1.0 + mol1.mass) * (1.0 + mol2.mass))
+
+        shared_repulsion = self.rules.get_constant('shared_prime_repulsion')
+        even_attraction = self.rules.get_constant('even_index_attraction')
+        odd_repulsion = self.rules.get_constant('odd_index_repulsion')
+        mixed_orbital = self.rules.get_constant('mixed_parity_orbital')
+        fractal_polarization = self.rules.get_constant('fractal_polarization')
+        fractal_torsion = self.rules.get_constant('fractal_torsion')
+
+        force = np.zeros(3, dtype=float)
+        force += -direction_normalized * (shared_repulsion * shared_overlap / (1.0 + total_mass)) * inv_sq
+        force += direction_normalized * even_attraction * even_coupling * inv_sq
+        force += -direction_normalized * odd_repulsion * odd_coupling * inv_soft
+
+        orbital_axis = np.cross(direction_normalized, np.array([0.0, 1.0, 0.0]))
+        orbital_norm = np.linalg.norm(orbital_axis)
+        if orbital_norm > 1e-8:
+            orbital_axis /= orbital_norm
+            force += orbital_axis * mixed_orbital * mixed_coupling * inv_soft
+
+        fractal_alignment = float(np.dot(mol1.fractal_signature, mol2.fractal_signature))
+        force += direction_normalized * (-fractal_alignment) * fractal_polarization * inv_sq
+
+        torsion_cross = np.cross(mol1.fractal_signature, mol2.fractal_signature)
+        torsion_scalar = float(np.dot(torsion_cross, np.array([0.0, 1.0, 0.0])))
+        if orbital_norm > 1e-8:
+            force += orbital_axis * fractal_torsion * torsion_scalar * inv_sq
+
+        return force
+
     def apply_rules(self, mol1: PrimeMolecule, mol2: PrimeMolecule) -> Tuple[np.ndarray, np.ndarray]:
         """Apply all relevant interaction rules between two molecules"""
         direction = mol2.position - mol1.position
@@ -990,6 +1150,10 @@ class PrimeChemistry:
                 total_force1 += force
                 total_force2 -= force
 
+        chemical_force = self.prime_fractal_force(mol1, mol2, direction_normalized, distance)
+        total_force1 += chemical_force
+        total_force2 -= chemical_force
+
         # Apply force limits
         max_force = self.rules.get_constant('max_force')
         total_force1 = np.clip(total_force1, -max_force, max_force)
@@ -1010,6 +1174,12 @@ class PrimeChemistry:
                     products = rule.effect(mol1, mol2)
                     if not products:
                         return []
+
+                    for product in products:
+                        bounded_number = max(2, min(int(product.number), self.max_number))
+                        if bounded_number != product.number:
+                            product.number = bounded_number
+                            product.refresh_derived_properties()
 
                     inherited_wealth = (mol1.wealth + mol2.wealth) * 0.85
                     new_entities = [product for product in products if product not in (mol1, mol2)]
@@ -1150,8 +1320,14 @@ class Visualizer:
         info = [
             f"Number: {self.selected_molecule.number}",
             "Prime factors: " + ", ".join(f"{p}^{c}" for p, c in self.selected_molecule.prime_factors.items()),
-            f"Mass: {self.selected_molecule.mass:.2f}",
+            "Prime indexes: " + ", ".join(
+                f"{p}->{self.selected_molecule.prime_indices[p]}" for p in sorted(self.selected_molecule.prime_factors.keys())
+            ),
+            f"Index mass: {self.selected_molecule.mass:.2f}",
             f"Charge: {self.selected_molecule.charge:.2f}",
+            f"Fractal signature: ({self.selected_molecule.fractal_signature[0]:.2f}, "
+            f"{self.selected_molecule.fractal_signature[1]:.2f}, "
+            f"{self.selected_molecule.fractal_signature[2]:.2f})",
             f"Position: ({self.selected_molecule.position[0]:.2f}, "
             f"{self.selected_molecule.position[1]:.2f}, "
             f"{self.selected_molecule.position[2]:.2f})",
@@ -1163,7 +1339,7 @@ class Visualizer:
         padding = 10
         line_height = 25
         box_height = len(info) * line_height + 2 * padding
-        box_width = 300
+        box_width = 520
 
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
@@ -1384,7 +1560,7 @@ def create_custom_rules() -> SimulationRules:
         priority=1.0,
         condition=gravity_condition,
         force_function=gravity_force,
-        strength=0.1  # Reduced strength to prevent excessive clustering
+        strength=0.04
     ))
 
     # Prime resonance orbital motion
@@ -1404,7 +1580,7 @@ def create_custom_rules() -> SimulationRules:
         priority=2.0,
         condition=resonance_condition,
         force_function=resonance_force,
-        strength=0.3
+        strength=0.15
     ))
 
     # ==== REACTION RULES ====
@@ -1532,7 +1708,14 @@ def create_custom_rules() -> SimulationRules:
     # Domain decomposition defaults for threaded force computation.
     rules.set_constant('region_partitions', 5.0)
     rules.set_constant('interaction_region_range', 1.0)
-    rules.set_constant('interaction_distance', 34.0)
+    rules.set_constant('interaction_distance', 26.0)
+    rules.set_constant('shared_prime_repulsion', 4.8)
+    rules.set_constant('even_index_attraction', 2.4)
+    rules.set_constant('odd_index_repulsion', 2.0)
+    rules.set_constant('mixed_parity_orbital', 1.8)
+    rules.set_constant('fractal_polarization', 2.2)
+    rules.set_constant('fractal_torsion', 1.3)
+    rules.set_constant('max_force', 18.0)
     rules.set_constant('threading_threshold', 240.0)
     rules.set_constant('threading_pairwork_threshold', 180000.0)
     rules.set_constant('growth_zone_speed', 16.0)
@@ -1569,12 +1752,12 @@ def apply_growth_profile(rules: SimulationRules, profile_name: str) -> Tuple[str
 
 
 class TerritoryVisualizer:
-    """2D territorial view: resources, extraction heat, and wealth-colored population."""
+    """2D chemistry field view: resources, extraction heat, and energy-colored population."""
 
     def __init__(self, width=1280, height=800):
         pygame.init()
         self.display = pygame.display.set_mode((width, height))
-        pygame.display.set_caption("Game of Primes: Territory Economy")
+        pygame.display.set_caption("Game of Primes: Prime Chemistry Field")
         self.width = width
         self.height = height
 
@@ -1686,9 +1869,9 @@ class TerritoryVisualizer:
         if self.font is None:
             return
 
-        self.display.blit(self.font.render("Low wealth", True, (220, 220, 220)),
+        self.display.blit(self.font.render("Low energy", True, (220, 220, 220)),
                           (legend_rect.left, legend_rect.bottom + 6))
-        high_text = self.font.render("High wealth", True, (220, 220, 220))
+        high_text = self.font.render("High energy", True, (220, 220, 220))
         self.display.blit(high_text, (legend_rect.right - high_text.get_width(), legend_rect.bottom + 6))
 
     def draw_sidebar(self, simulation: PrimeChemistry, runtime_info: Optional[Dict[str, float]] = None):
@@ -1712,7 +1895,7 @@ class TerritoryVisualizer:
         richness = float(np.mean(simulation.territory))
 
         lines = [
-            "Territory Economy Dashboard",
+            "Prime Chemistry Dashboard",
             f"Status: {status_text} | Step mode: {stepping_text} | FPS: {fps_value:.1f}",
             f"Profile: {self.profile_name.upper()} | Steps: {simulation.step_count}",
             f"Domain split: {simulation.region_partitions}x{simulation.region_partitions} | Active regions: {simulation.last_region_count}",
@@ -1726,9 +1909,9 @@ class TerritoryVisualizer:
             f"Average speed: {avg_speed:.3f} units/step",
             f"Temperature: {simulation.temperature:.2f}",
             "",
-            "Economy & Extraction",
-            f"Avg wealth: {avg_wealth:.2f} | Range: {min_wealth:.2f} -> {max_wealth:.2f}",
-            f"Wealth inequality (CV): {wealth_cv:.3f}",
+            "Energy & Extraction",
+            f"Avg energy: {avg_wealth:.2f} | Range: {min_wealth:.2f} -> {max_wealth:.2f}",
+            f"Energy inequality (CV): {wealth_cv:.3f}",
             f"Extraction current step: {simulation.last_step_extraction:.4f}",
             f"Extraction avg ({window_steps}): {avg_extraction:.4f}",
             f"Total extracted: {simulation.total_extracted:.2f}",
@@ -1832,8 +2015,8 @@ def main(
     growth_profile='normal',
     view_mode='territory',
     world_size=120,
-    molecule_count=260,
-    interaction_distance=34.0
+    molecule_count=200,
+    interaction_distance=26.0
 ):
     """Main simulation loop"""
     rules = create_custom_rules()
@@ -1898,7 +2081,7 @@ def main(
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Prime chemistry and territory economy simulation")
+    parser = argparse.ArgumentParser(description="Prime chemistry and interaction-field simulation")
     parser.add_argument('--fps', type=int, default=30, help='Target frames per second')
     parser.add_argument('--growth', choices=sorted(GROWTH_PROFILES.keys()),
                         default='normal', help='Growth profile tuning')
@@ -1906,9 +2089,9 @@ def parse_args():
                         help='Visualization mode (territory is default)')
     parser.add_argument('--size', type=float, default=120.0,
                         help='World side size in simulation units')
-    parser.add_argument('--molecules', type=int, default=260,
+    parser.add_argument('--molecules', type=int, default=200,
                         help='Initial molecule count')
-    parser.add_argument('--interaction-distance', type=float, default=34.0,
+    parser.add_argument('--interaction-distance', type=float, default=26.0,
                         help='Max distance for force interactions (0 = unlimited, slower)')
     return parser.parse_args()
 
