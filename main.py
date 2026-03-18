@@ -1727,7 +1727,7 @@ def main(fps=60, growth_profile='normal', view_mode='territory'):
     rules = create_custom_rules()
     profile_name, profile_settings = apply_growth_profile(rules, growth_profile)
 
-    simulation = PrimeChemistry(rules, size=100, molecule_count=500, max_number=10000)
+    simulation = PrimeChemistry(rules, size=1000, molecule_count=100, max_number=1000)
     simulation.set_growth_profile(profile_name, profile_settings)
 
     if view_mode == '3d':
