@@ -243,6 +243,10 @@ class SimulationRules:
             'growth_zone_radius': 9.0,
             'growth_zone_strength': 0.22,
             'growth_zone_relocation_chance': 0.004,
+            'growth_zone_spawn_chance': 0.010,
+            'growth_zone_despawn_chance': 0.007,
+            'growth_zone_min_count': 3.0,
+            'growth_zone_max_count': 10.0,
             'resource_mobility': 0.8,
             'proximity_repulsion_distance': 1.25,
             'proximity_repulsion_strength': 0.55
@@ -420,16 +424,22 @@ class PrimeChemistry:
         self.temperature = 1.0
         self.territory_resolution = 96
         self.territory_capacity = 1.0
-        self.territory = np.random.uniform(0.35, self.territory_capacity,
-                                           (self.territory_resolution, self.territory_resolution))
+        base_territory = np.random.normal(
+            0.58,
+            0.05,
+            (self.territory_resolution, self.territory_resolution)
+        )
+        self.territory = np.clip(base_territory, 0.25, self.territory_capacity)
         grid_axis = np.arange(self.territory_resolution, dtype=float)
         self.territory_grid_x, self.territory_grid_z = np.meshgrid(grid_axis, grid_axis)
-        self.growth_zone_count = 3
-        self.growth_zone_positions = np.random.uniform(
-            0.0, self.territory_resolution - 1.0, (self.growth_zone_count, 2)
-        )
-        random_angles = np.random.uniform(0.0, 2.0 * math.pi, self.growth_zone_count)
-        self.growth_zone_velocities = np.column_stack((np.cos(random_angles), np.sin(random_angles)))
+        min_zones = max(1, int(self.rules.get_constant('growth_zone_min_count')))
+        max_zones = max(min_zones, int(self.rules.get_constant('growth_zone_max_count')))
+        initial_zone_count = random.randint(min_zones, max_zones)
+        self.growth_zone_positions = np.empty((0, 2), dtype=float)
+        self.growth_zone_velocities = np.empty((0, 2), dtype=float)
+        self.growth_zone_strengths = np.empty((0,), dtype=float)
+        for _ in range(initial_zone_count):
+            self._spawn_growth_zone()
         self.extraction_heat = np.zeros_like(self.territory)
         self.total_extracted = 0.0
         self.last_step_extraction = 0.0
@@ -455,6 +465,36 @@ class PrimeChemistry:
         self.population_history.append(len(self.molecules))
         self.extraction_history.append(0.0)
         self.refresh_parallel_configuration()
+
+    @property
+    def growth_zone_count(self) -> int:
+        return int(self.growth_zone_positions.shape[0])
+
+    def _random_growth_zone_position(self) -> np.ndarray:
+        max_coord = self.territory_resolution - 1.0
+        return np.random.uniform(0.0, max_coord, 2)
+
+    @staticmethod
+    def _random_growth_zone_velocity() -> np.ndarray:
+        angle = np.random.uniform(0.0, 2.0 * math.pi)
+        return np.array([math.cos(angle), math.sin(angle)], dtype=float)
+
+    def _spawn_growth_zone(self):
+        new_position = self._random_growth_zone_position().reshape(1, 2)
+        new_velocity = self._random_growth_zone_velocity().reshape(1, 2)
+        # Keep slight per-zone variance so zones are not visually identical.
+        new_strength = np.array([np.random.uniform(0.75, 1.25)], dtype=float)
+        self.growth_zone_positions = np.vstack((self.growth_zone_positions, new_position))
+        self.growth_zone_velocities = np.vstack((self.growth_zone_velocities, new_velocity))
+        self.growth_zone_strengths = np.concatenate((self.growth_zone_strengths, new_strength))
+
+    def _despawn_growth_zone(self):
+        if self.growth_zone_count <= 0:
+            return
+        remove_idx = random.randrange(self.growth_zone_count)
+        self.growth_zone_positions = np.delete(self.growth_zone_positions, remove_idx, axis=0)
+        self.growth_zone_velocities = np.delete(self.growth_zone_velocities, remove_idx, axis=0)
+        self.growth_zone_strengths = np.delete(self.growth_zone_strengths, remove_idx, axis=0)
 
     def refresh_parallel_configuration(self):
         """Refresh threading settings from rules and create/update workers."""
@@ -756,7 +796,33 @@ class PrimeChemistry:
         zone_speed = self.rules.get_constant('growth_zone_speed')
         zone_jitter = self.rules.get_constant('growth_zone_jitter')
         relocation_chance = self.rules.get_constant('growth_zone_relocation_chance')
+        spawn_chance = self.rules.get_constant('growth_zone_spawn_chance')
+        despawn_chance = self.rules.get_constant('growth_zone_despawn_chance')
+        min_zones = max(1, int(self.rules.get_constant('growth_zone_min_count')))
+        max_zones = max(min_zones, int(self.rules.get_constant('growth_zone_max_count')))
         effective_dt = max(time_scale, 1e-4)
+
+        if self.growth_zone_count < min_zones:
+            for _ in range(min_zones - self.growth_zone_count):
+                self._spawn_growth_zone()
+
+        if self.growth_zone_count > max_zones:
+            for _ in range(self.growth_zone_count - max_zones):
+                self._despawn_growth_zone()
+
+        # Scale chance by dt-like factor so behavior stays close across profiles.
+        chance_scale = math.sqrt(effective_dt * 120.0)
+        step_spawn_probability = np.clip(spawn_chance * chance_scale, 0.0, 1.0)
+        step_despawn_probability = np.clip(despawn_chance * chance_scale, 0.0, 1.0)
+        step_relocation_probability = np.clip(relocation_chance * chance_scale, 0.0, 1.0)
+
+        if self.growth_zone_count < max_zones and random.random() < step_spawn_probability:
+            self._spawn_growth_zone()
+        if self.growth_zone_count > min_zones and random.random() < step_despawn_probability:
+            self._despawn_growth_zone()
+
+        if self.growth_zone_count <= 0:
+            return
 
         random_jitter = np.random.normal(0.0, zone_jitter * math.sqrt(effective_dt), self.growth_zone_velocities.shape)
         self.growth_zone_velocities += random_jitter
@@ -766,6 +832,8 @@ class PrimeChemistry:
         self.growth_zone_velocities /= velocity_norms
 
         self.growth_zone_positions += self.growth_zone_velocities * (zone_speed * effective_dt)
+        self.growth_zone_strengths += np.random.normal(0.0, 0.03 * math.sqrt(effective_dt), self.growth_zone_strengths.shape)
+        self.growth_zone_strengths = np.clip(self.growth_zone_strengths, 0.55, 1.45)
 
         max_coord = self.territory_resolution - 1.0
         for zone_idx in range(self.growth_zone_count):
@@ -777,21 +845,23 @@ class PrimeChemistry:
                     self.growth_zone_positions[zone_idx, axis] = max_coord
                     self.growth_zone_velocities[zone_idx, axis] *= -1.0
 
-            if random.random() < relocation_chance:
-                self.growth_zone_positions[zone_idx] = np.random.uniform(0.0, max_coord, 2)
-                new_angle = np.random.uniform(0.0, 2.0 * math.pi)
-                self.growth_zone_velocities[zone_idx] = np.array([math.cos(new_angle), math.sin(new_angle)])
+            if random.random() < step_relocation_probability:
+                self.growth_zone_positions[zone_idx] = self._random_growth_zone_position()
+                self.growth_zone_velocities[zone_idx] = self._random_growth_zone_velocity()
+                self.growth_zone_strengths[zone_idx] = np.random.uniform(0.7, 1.35)
 
     def _apply_growth_zones(self, time_scale: float):
+        if self.growth_zone_count <= 0:
+            return
         zone_radius = max(1e-3, self.rules.get_constant('growth_zone_radius'))
         zone_strength = self.rules.get_constant('growth_zone_strength')
         radius_sq = zone_radius * zone_radius
 
-        for zone_position in self.growth_zone_positions:
+        for zone_position, local_strength in zip(self.growth_zone_positions, self.growth_zone_strengths):
             delta_x = self.territory_grid_x - zone_position[0]
             delta_z = self.territory_grid_z - zone_position[1]
             influence = np.exp(-(delta_x * delta_x + delta_z * delta_z) / (2.0 * radius_sq))
-            self.territory += influence * zone_strength * time_scale
+            self.territory += influence * zone_strength * local_strength * time_scale
             self.extraction_heat += influence * 0.05 * time_scale
 
     def resource_gradient_vector(self, molecule: PrimeMolecule) -> np.ndarray:
@@ -1452,6 +1522,10 @@ def create_custom_rules() -> SimulationRules:
     rules.set_constant('growth_zone_radius', 8.0)
     rules.set_constant('growth_zone_strength', 0.24)
     rules.set_constant('growth_zone_relocation_chance', 0.0045)
+    rules.set_constant('growth_zone_spawn_chance', 0.012)
+    rules.set_constant('growth_zone_despawn_chance', 0.009)
+    rules.set_constant('growth_zone_min_count', 3.0)
+    rules.set_constant('growth_zone_max_count', 12.0)
     rules.set_constant('resource_mobility', 0.85)
     rules.set_constant('proximity_repulsion_distance', 1.3)
     rules.set_constant('proximity_repulsion_strength', 0.6)
@@ -1644,7 +1718,9 @@ class TerritoryVisualizer:
             f"Richness mean: {richness:.3f}",
             f"Depleted area (<20%): {depleted_ratio * 100:.1f}%",
             f"Hotspot intensity: {hotspot_heat:.3f}",
-            f"Moving growth zones: {simulation.growth_zone_count}",
+            f"Moving growth zones: {simulation.growth_zone_count} "
+            f"({int(simulation.rules.get_constant('growth_zone_min_count'))}-"
+            f"{int(simulation.rules.get_constant('growth_zone_max_count'))})",
             "",
             "Controls:",
             "SPACE pause/resume",
@@ -1687,13 +1763,20 @@ class TerritoryVisualizer:
 
         zone_radius_cells = simulation.rules.get_constant('growth_zone_radius')
         zone_radius_px = max(4, int(zone_radius_cells * self.territory_rect.width / simulation.territory_resolution))
-        for zone_position in simulation.growth_zone_positions:
+        for zone_position, zone_strength in zip(simulation.growth_zone_positions, simulation.growth_zone_strengths):
             zone_x = int(self.territory_rect.left + (zone_position[0] / (simulation.territory_resolution - 1))
                          * self.territory_rect.width)
             zone_y = int(self.territory_rect.top + (zone_position[1] / (simulation.territory_resolution - 1))
                          * self.territory_rect.height)
-            pygame.draw.circle(self.display, (255, 212, 120), (zone_x, zone_y), zone_radius_px, 1)
-            pygame.draw.circle(self.display, (255, 235, 180), (zone_x, zone_y), 2)
+            tint = float(np.clip((zone_strength - 0.55) / 0.9, 0.0, 1.0))
+            ring_color = (
+                int(220 + 35 * tint),
+                int(160 + 70 * tint),
+                int(95 + 95 * tint)
+            )
+            core_radius = max(2, int(2 + 2.5 * tint))
+            pygame.draw.circle(self.display, ring_color, (zone_x, zone_y), zone_radius_px, 1)
+            pygame.draw.circle(self.display, (255, 235, 190), (zone_x, zone_y), core_radius)
 
         if simulation.molecules:
             wealth_cap = max(molecule.wealth for molecule in simulation.molecules)

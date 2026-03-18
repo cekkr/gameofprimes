@@ -10,6 +10,7 @@ Prime-factor chemistry simulation with two visual modes:
 - Prime-number based molecules with interaction and reaction rules.
 - Population dynamics with fusion/fission/decomposition.
 - Territory resource extraction and regeneration.
+- Dynamic growth zones that move, relocate, and change count over time.
 - Per-agent wealth tracking with real-time color gradient.
 - Tunable growth profiles: `slow`, `normal`, `fast`.
 
