@@ -58,6 +58,14 @@ python3 main.py --size 120 --molecules 260
 python3 main.py --size 180 --molecules 500
 ```
 
+Tune performance/physics tradeoff:
+
+```bash
+python3 main.py --interaction-distance 34
+python3 main.py --interaction-distance 24   # faster, more local
+python3 main.py --interaction-distance 0    # unlimited (slowest)
+```
+
 ## Controls
 
 ### Territory View (default)

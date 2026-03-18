@@ -237,7 +237,7 @@ class SimulationRules:
             'threading_pairwork_threshold': 180000.0,
             'region_partitions': 4.0,
             'interaction_region_range': 1.0,
-            'interaction_distance': 0.0,
+            'interaction_distance': 34.0,
             'growth_zone_speed': 14.0,
             'growth_zone_jitter': 2.0,
             'growth_zone_radius': 8.0,
@@ -1531,6 +1531,7 @@ def create_custom_rules() -> SimulationRules:
     # Domain decomposition defaults for threaded force computation.
     rules.set_constant('region_partitions', 5.0)
     rules.set_constant('interaction_region_range', 1.0)
+    rules.set_constant('interaction_distance', 34.0)
     rules.set_constant('threading_threshold', 240.0)
     rules.set_constant('threading_pairwork_threshold', 180000.0)
     rules.set_constant('growth_zone_speed', 16.0)
@@ -1714,6 +1715,7 @@ class TerritoryVisualizer:
             f"Status: {status_text} | Step mode: {stepping_text} | FPS: {fps_value:.1f}",
             f"Profile: {self.profile_name.upper()} | Steps: {simulation.step_count}",
             f"Domain split: {simulation.region_partitions}x{simulation.region_partitions} | Active regions: {simulation.last_region_count}",
+            f"Interaction cutoff: {simulation.rules.get_constant('interaction_distance'):.1f}",
             f"Threaded forces: {'ON' if simulation.last_threaded_forces else 'OFF'} | Pair work: {simulation.last_pairwork}",
             f"Proximity repulsion: d={simulation.rules.get_constant('proximity_repulsion_distance'):.2f}",
             "",
@@ -1824,10 +1826,18 @@ class TerritoryVisualizer:
         pygame.display.flip()
 
 
-def main(fps=60, growth_profile='normal', view_mode='territory', world_size=120, molecule_count=260):
+def main(
+    fps=60,
+    growth_profile='normal',
+    view_mode='territory',
+    world_size=120,
+    molecule_count=260,
+    interaction_distance=34.0
+):
     """Main simulation loop"""
     rules = create_custom_rules()
     profile_name, profile_settings = apply_growth_profile(rules, growth_profile)
+    rules.set_constant('interaction_distance', max(0.0, float(interaction_distance)))
 
     simulation = PrimeChemistry(rules, size=world_size, molecule_count=molecule_count, max_number=10000)
     simulation.set_growth_profile(profile_name, profile_settings)
@@ -1842,13 +1852,15 @@ def main(fps=60, growth_profile='normal', view_mode='territory', world_size=120,
     frame_time = 1.0 / fps
     accumulated_time = 0.0
     last_time = pygame.time.get_ticks() / 1000.0
+    max_steps_per_frame = 1
+    max_accumulator = frame_time * max_steps_per_frame
 
     running = True
     while running:
         current_time = pygame.time.get_ticks() / 1000.0
-        delta_time = current_time - last_time
+        delta_time = min(current_time - last_time, 0.25)
         last_time = current_time
-        accumulated_time += delta_time
+        accumulated_time = min(max_accumulator, accumulated_time + delta_time)
 
         event_result = visualizer.handle_events()
         if event_result is False:
@@ -1862,10 +1874,15 @@ def main(fps=60, growth_profile='normal', view_mode='territory', world_size=120,
                 visualizer.set_profile(profile_name)
 
         if not visualizer.paused:
-            while accumulated_time >= frame_time:
+            steps_this_frame = 0
+            while accumulated_time >= frame_time and steps_this_frame < max_steps_per_frame:
                 if visualizer.auto_step:
                     simulation.step()
                 accumulated_time -= frame_time
+                steps_this_frame += 1
+            if accumulated_time >= frame_time:
+                # Drop excess backlog so rendering cannot starve when simulation is heavy.
+                accumulated_time = 0.0
         elif event_result == 'step':
             simulation.step()
 
@@ -1890,6 +1907,8 @@ def parse_args():
                         help='World side size in simulation units')
     parser.add_argument('--molecules', type=int, default=260,
                         help='Initial molecule count')
+    parser.add_argument('--interaction-distance', type=float, default=34.0,
+                        help='Max distance for force interactions (0 = unlimited, slower)')
     return parser.parse_args()
 
 
@@ -1900,5 +1919,6 @@ if __name__ == "__main__":
         growth_profile=args.growth,
         view_mode=args.view,
         world_size=max(10.0, float(args.size)),
-        molecule_count=max(10, int(args.molecules))
+        molecule_count=max(10, int(args.molecules)),
+        interaction_distance=max(0.0, float(args.interaction_distance))
     )
