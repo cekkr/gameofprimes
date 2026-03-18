@@ -6,9 +6,11 @@ import numpy as np
 import random
 import math
 import argparse
+import os
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Callable, List, Dict, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
 
 
 class UIFont:
@@ -227,7 +229,15 @@ class SimulationRules:
             'damping': 0.95,
             'temperature_factor': 1.0,
             'quantum_strength': 0.2,
-            'time_scale': 1.0  # Added time scale constant, default is 1.0 (normal speed)
+            'time_scale': 1.0,  # Added time scale constant, default is 1.0 (normal speed)
+            'reaction_distance': 2.0,
+            'threading_enabled': 1.0,
+            'thread_workers': float(max(2, min(4, (os.cpu_count() or 4) - 1))),
+            'threading_threshold': 240.0,
+            'threading_pairwork_threshold': 180000.0,
+            'region_partitions': 4.0,
+            'interaction_region_range': 1.0,
+            'interaction_distance': 0.0
         }
 
     def add_interaction_rule(self, rule: InteractionRule):
@@ -412,6 +422,14 @@ class PrimeChemistry:
         self.step_count = 0
         self.population_history = deque(maxlen=360)
         self.extraction_history = deque(maxlen=360)
+        self.thread_pool: Optional[ThreadPoolExecutor] = None
+        self.thread_workers = 1
+        self.threading_threshold = 240
+        self.threading_pairwork_threshold = 180000
+        self.region_partitions = 4
+        self.last_pairwork = 0
+        self.last_region_count = 0
+        self.last_threaded_forces = False
 
         # Initialize random molecules
         for _ in range(molecule_count):
@@ -420,49 +438,242 @@ class PrimeChemistry:
             self.molecules.append(PrimeMolecule(number, pos))
         self.population_history.append(len(self.molecules))
         self.extraction_history.append(0.0)
+        self.refresh_parallel_configuration()
+
+    def refresh_parallel_configuration(self):
+        """Refresh threading settings from rules and create/update workers."""
+        threading_enabled = self.rules.get_constant('threading_enabled') >= 0.5
+        desired_workers = max(1, int(self.rules.get_constant('thread_workers')))
+        desired_threshold = max(16, int(self.rules.get_constant('threading_threshold')))
+        desired_pairwork_threshold = max(10000, int(self.rules.get_constant('threading_pairwork_threshold')))
+        desired_partitions = max(1, int(self.rules.get_constant('region_partitions')))
+
+        self.threading_threshold = desired_threshold
+        self.threading_pairwork_threshold = desired_pairwork_threshold
+        self.region_partitions = desired_partitions
+
+        if not threading_enabled or desired_workers <= 1:
+            if self.thread_pool is not None:
+                self.thread_pool.shutdown(wait=False, cancel_futures=True)
+                self.thread_pool = None
+            self.thread_workers = 1
+            return
+
+        if self.thread_pool is None or self.thread_workers != desired_workers:
+            if self.thread_pool is not None:
+                self.thread_pool.shutdown(wait=False, cancel_futures=True)
+            self.thread_pool = ThreadPoolExecutor(max_workers=desired_workers)
+            self.thread_workers = desired_workers
+
+    def close(self):
+        if self.thread_pool is not None:
+            self.thread_pool.shutdown(wait=False, cancel_futures=True)
+            self.thread_pool = None
+
+    def __del__(self):
+        self.close()
 
     def set_growth_profile(self, profile_name: str, profile_settings: Dict[str, float]):
         self.profile_name = profile_name
         self.extraction_multiplier = profile_settings['extraction_multiplier']
 
+    def _region_index_for_position(self, position: np.ndarray) -> Tuple[int, int]:
+        normalized_x = np.clip((position[0] / self.size) + 0.5, 0.0, 0.999999)
+        normalized_z = np.clip((position[2] / self.size) + 0.5, 0.0, 0.999999)
+        region_x = min(self.region_partitions - 1, int(normalized_x * self.region_partitions))
+        region_z = min(self.region_partitions - 1, int(normalized_z * self.region_partitions))
+        return region_x, region_z
+
+    def _build_regions(self) -> Dict[Tuple[int, int], List[int]]:
+        regions: Dict[Tuple[int, int], List[int]] = defaultdict(list)
+        for index, molecule in enumerate(self.molecules):
+            regions[self._region_index_for_position(molecule.position)].append(index)
+        return dict(regions)
+
+    def _region_force_pairs(self, regions: Dict[Tuple[int, int], List[int]]) -> List[Tuple[List[int], List[int], bool]]:
+        region_items = list(regions.items())
+        interaction_region_range = max(0, int(self.rules.get_constant('interaction_region_range')))
+        pairs: List[Tuple[List[int], List[int], bool]] = []
+
+        for left_idx, (left_coord, left_region) in enumerate(region_items):
+            for right_idx in range(left_idx, len(region_items)):
+                right_coord, right_region = region_items[right_idx]
+                if interaction_region_range > 0:
+                    grid_distance = max(abs(left_coord[0] - right_coord[0]), abs(left_coord[1] - right_coord[1]))
+                    if grid_distance > interaction_region_range:
+                        continue
+                pairs.append((left_region, right_region, left_idx == right_idx))
+
+        return pairs
+
+    def _compute_force_chunk(self, region_pair_chunk: List[Tuple[List[int], List[int], bool]]) -> Dict[int, np.ndarray]:
+        local_forces: Dict[int, np.ndarray] = defaultdict(lambda: np.zeros(3))
+        molecules = self.molecules
+        interaction_distance = self.rules.get_constant('interaction_distance')
+        distance_limit_sq = interaction_distance * interaction_distance if interaction_distance > 0.0 else 0.0
+
+        for left_indices, right_indices, same_region in region_pair_chunk:
+            if same_region:
+                for left_offset, i in enumerate(left_indices):
+                    mol1 = molecules[i]
+                    for j in right_indices[left_offset + 1:]:
+                        if distance_limit_sq > 0.0:
+                            delta = molecules[j].position - mol1.position
+                            if np.dot(delta, delta) > distance_limit_sq:
+                                continue
+                        force1, force2 = self.apply_rules(mol1, molecules[j])
+                        local_forces[i] += force1
+                        local_forces[j] += force2
+            else:
+                for i in left_indices:
+                    mol1 = molecules[i]
+                    for j in right_indices:
+                        if distance_limit_sq > 0.0:
+                            delta = molecules[j].position - mol1.position
+                            if np.dot(delta, delta) > distance_limit_sq:
+                                continue
+                        force1, force2 = self.apply_rules(mol1, molecules[j])
+                        local_forces[i] += force1
+                        local_forces[j] += force2
+
+        return local_forces
+
+    @staticmethod
+    def _estimate_pairwork(region_pairs: List[Tuple[List[int], List[int], bool]]) -> int:
+        pairwork = 0
+        for left_indices, right_indices, same_region in region_pairs:
+            if same_region:
+                count = len(left_indices)
+                pairwork += (count * (count - 1)) // 2
+            else:
+                pairwork += len(left_indices) * len(right_indices)
+        return pairwork
+
+    def _compute_forces_sequential(self, regions: Dict[Tuple[int, int], List[int]],
+                                   region_pairs: Optional[List[Tuple[List[int], List[int], bool]]] = None) -> List[np.ndarray]:
+        molecule_count = len(self.molecules)
+        forces = [np.zeros(3) for _ in range(molecule_count)]
+        if molecule_count <= 1:
+            return forces
+
+        if region_pairs is None:
+            region_pairs = self._region_force_pairs(regions)
+
+        local_forces = self._compute_force_chunk(region_pairs)
+        for index, force in local_forces.items():
+            forces[index] += force
+
+        return forces
+
+    def _compute_forces_threaded(self, regions: Dict[Tuple[int, int], List[int]],
+                                 region_pairs: Optional[List[Tuple[List[int], List[int], bool]]] = None) -> List[np.ndarray]:
+        molecule_count = len(self.molecules)
+        forces = [np.zeros(3) for _ in range(molecule_count)]
+
+        if self.thread_pool is None or molecule_count <= 1:
+            return self._compute_forces_sequential(regions, region_pairs)
+
+        if region_pairs is None:
+            region_pairs = self._region_force_pairs(regions)
+        if not region_pairs:
+            return forces
+
+        chunk_target = max(1, self.thread_workers * 2)
+        chunk_size = max(1, math.ceil(len(region_pairs) / chunk_target))
+        chunks = [region_pairs[start:start + chunk_size] for start in range(0, len(region_pairs), chunk_size)]
+
+        futures = [self.thread_pool.submit(self._compute_force_chunk, chunk) for chunk in chunks]
+        for future in futures:
+            local_forces = future.result()
+            for index, force in local_forces.items():
+                forces[index] += force
+
+        return forces
+
+    def _collect_reaction_candidates(self, regions: Dict[Tuple[int, int], List[int]],
+                                     reaction_distance: float) -> List[Tuple[float, int, int]]:
+        if reaction_distance <= 0.0:
+            return []
+
+        candidates: List[Tuple[float, int, int]] = []
+        neighbor_offsets = (-1, 0, 1)
+
+        for region, left_indices in regions.items():
+            region_x, region_z = region
+
+            for dx in neighbor_offsets:
+                for dz in neighbor_offsets:
+                    neighbor_region = (region_x + dx, region_z + dz)
+                    right_indices = regions.get(neighbor_region)
+                    if right_indices is None:
+                        continue
+
+                    # Keep each region relation once, including inter-region neighbors.
+                    if neighbor_region < region:
+                        continue
+
+                    if neighbor_region == region:
+                        for left_offset, i in enumerate(left_indices):
+                            for j in left_indices[left_offset + 1:]:
+                                distance = np.linalg.norm(self.molecules[j].position - self.molecules[i].position)
+                                if distance < reaction_distance:
+                                    candidates.append((distance, i, j))
+                    else:
+                        for i in left_indices:
+                            for j in right_indices:
+                                if i >= j:
+                                    continue
+                                distance = np.linalg.norm(self.molecules[j].position - self.molecules[i].position)
+                                if distance < reaction_distance:
+                                    candidates.append((distance, i, j))
+
+        candidates.sort(key=lambda value: value[0])
+        return candidates
+
     def step(self):
         """Perform one step of the simulation"""
+        self.refresh_parallel_configuration()
         new_molecules = []
         removed_molecules = set()
 
         # Apply temperature variation
         self.temperature = 1.0 + 0.1 * math.sin(pygame.time.get_ticks() / 1000)
 
-        # Calculate forces and check for reactions
-        forces = defaultdict(lambda: np.zeros(3))
         time_scale = max(self.rules.get_constant('time_scale'), 1e-4)
+        reaction_distance = self.rules.get_constant('reaction_distance')
         step_extracted = 0.0
 
-        for i, mol1 in enumerate(self.molecules):
-            if i in removed_molecules:
+        # Thermal noise follows sqrt(dt) scaling for stable small timesteps.
+        thermal_sigma = 0.01 * self.temperature * math.sqrt(time_scale)
+        for molecule in self.molecules:
+            molecule.velocity += np.random.normal(0, thermal_sigma, 3)
+
+        regions = self._build_regions()
+        self.last_region_count = len(regions)
+        region_pairs = self._region_force_pairs(regions)
+        pairwork = self._estimate_pairwork(region_pairs)
+        self.last_pairwork = pairwork
+        should_thread = (
+            self.thread_pool is not None and
+            len(self.molecules) >= self.threading_threshold and
+            pairwork >= self.threading_pairwork_threshold
+        )
+        self.last_threaded_forces = should_thread
+
+        if should_thread:
+            forces = self._compute_forces_threaded(regions, region_pairs)
+        else:
+            forces = self._compute_forces_sequential(regions, region_pairs)
+
+        # Reactions stay local to a reaction distance, including neighboring regions.
+        for _, i, j in self._collect_reaction_candidates(regions, reaction_distance):
+            if i in removed_molecules or j in removed_molecules:
                 continue
-
-            # Thermal noise follows sqrt(dt) scaling for stable small timesteps.
-            thermal_sigma = 0.01 * self.temperature * math.sqrt(time_scale)
-            mol1.velocity += np.random.normal(0, thermal_sigma, 3)
-
-            for j, mol2 in enumerate(self.molecules[i + 1:], i + 1):
-                if j in removed_molecules:
-                    continue
-
-                # Apply interaction rules.
-                force1, force2 = self.apply_rules(mol1, mol2)
-                forces[i] += force1
-                forces[j] += force2
-
-                # Check for reactions continuously and scale probability with timestep.
-                if np.linalg.norm(mol2.position - mol1.position) < 2.0:
-                    reaction_products = self.attempt_reactions(mol1, mol2, time_scale)
-                    if reaction_products:
-                        new_molecules.extend(reaction_products)
-                        removed_molecules.add(i)
-                        removed_molecules.add(j)
-                        break
+            reaction_products = self.attempt_reactions(self.molecules[i], self.molecules[j], time_scale)
+            if reaction_products:
+                new_molecules.extend(reaction_products)
+                removed_molecules.add(i)
+                removed_molecules.add(j)
 
         # Update positions and velocities
         damping = self.rules.get_constant('damping')
@@ -1136,6 +1347,12 @@ def create_custom_rules() -> SimulationRules:
         probability=0.25
     ))
 
+    # Domain decomposition defaults for threaded force computation.
+    rules.set_constant('region_partitions', 5.0)
+    rules.set_constant('interaction_region_range', 1.0)
+    rules.set_constant('threading_threshold', 240.0)
+    rules.set_constant('threading_pairwork_threshold', 180000.0)
+
     return rules
 
 
@@ -1302,6 +1519,8 @@ class TerritoryVisualizer:
             "Territory Economy Dashboard",
             f"Status: {status_text} | Step mode: {stepping_text} | FPS: {fps_value:.1f}",
             f"Profile: {self.profile_name.upper()} | Steps: {simulation.step_count}",
+            f"Domain split: {simulation.region_partitions}x{simulation.region_partitions} | Active regions: {simulation.last_region_count}",
+            f"Threaded forces: {'ON' if simulation.last_threaded_forces else 'OFF'} | Pair work: {simulation.last_pairwork}",
             "",
             "Population & Motion",
             f"Population: {len(simulation.molecules)} ({pop_delta_sign}{pop_delta} over {window_steps} steps)",
@@ -1438,6 +1657,7 @@ def main(fps=60, growth_profile='normal', view_mode='territory'):
         visualizer.draw(simulation, runtime_info)
         clock.tick(fps)
 
+    simulation.close()
     pygame.quit()
 
 
