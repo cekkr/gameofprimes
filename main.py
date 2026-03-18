@@ -299,6 +299,10 @@ class SimulationRules:
             'mixed_parity_orbital': 1.4,
             'fractal_polarization': 2.0,
             'fractal_torsion': 1.1,
+            'inertial_force_strength': 1.6,
+            'inertial_force_persistence': 0.975,
+            'inertial_force_jitter': 0.55,
+            'fluid_drag': 0.10,
             'growth_zone_speed': 14.0,
             'growth_zone_jitter': 2.0,
             'growth_zone_radius': 8.0,
@@ -407,6 +411,8 @@ class PrimeMolecule:
         self.position = np.array(position, dtype=float)
         # Non-zero initial motion prevents dead starts and helps early encounters.
         self.velocity = np.random.normal(0.0, 0.9, 3)
+        self.inertial_force = np.random.normal(0.0, 1.0, 3)
+        self.inertial_force[1] *= 0.35
         self.acceleration = np.zeros(3)
         self.prime_factors: Dict[int, int] = {}
         self.prime_indices: Dict[int, int] = {}
@@ -830,11 +836,28 @@ class PrimeChemistry:
         time_scale = max(self.rules.get_constant('time_scale'), 1e-4)
         reaction_distance = self.rules.get_constant('reaction_distance')
         step_extracted = 0.0
+        inertial_strength = self.rules.get_constant('inertial_force_strength')
+        inertial_persistence = float(np.clip(self.rules.get_constant('inertial_force_persistence'), 0.0, 0.9995))
+        inertial_jitter = max(0.0, self.rules.get_constant('inertial_force_jitter'))
+        fluid_drag = max(0.0, self.rules.get_constant('fluid_drag'))
 
         # Thermal noise follows sqrt(dt) scaling for stable small timesteps.
         thermal_sigma = 0.12 * self.temperature * math.sqrt(time_scale)
         for molecule in self.molecules:
             molecule.velocity += np.random.normal(0, thermal_sigma, 3)
+            # Persistent inertial drive keeps molecules active even in sparse regions.
+            molecule.inertial_force = (
+                molecule.inertial_force * inertial_persistence +
+                np.random.normal(0.0, inertial_jitter * math.sqrt(time_scale), 3)
+            )
+            molecule.inertial_force[1] *= 0.35
+            target_force = inertial_strength * (0.45 + 0.12 * math.log1p(max(molecule.mass, 1.0)))
+            force_norm = np.linalg.norm(molecule.inertial_force)
+            if force_norm < 1e-8:
+                molecule.inertial_force = np.random.normal(0.0, 1.0, 3)
+                molecule.inertial_force[1] *= 0.35
+                force_norm = np.linalg.norm(molecule.inertial_force)
+            molecule.inertial_force *= target_force / max(force_norm, 1e-8)
 
         regions = self._build_regions()
         self.last_region_count = len(regions)
@@ -871,8 +894,11 @@ class PrimeChemistry:
             if i not in removed_molecules:
                 # Integrate acceleration/velocity using the configured timestep.
                 molecule.velocity += forces[i] * 0.1 * time_scale
+                molecule.velocity += molecule.inertial_force * time_scale / max(1.0, math.sqrt(max(molecule.mass, 1.0)))
                 if resource_mobility > 0.0:
                     molecule.velocity += self.resource_gradient_vector(molecule) * resource_mobility * time_scale
+                if fluid_drag > 0.0:
+                    molecule.velocity *= max(0.0, 1.0 - fluid_drag * time_scale)
                 molecule.position += molecule.velocity * time_scale
 
                 # Apply damping
@@ -1715,6 +1741,10 @@ def create_custom_rules() -> SimulationRules:
     rules.set_constant('mixed_parity_orbital', 1.8)
     rules.set_constant('fractal_polarization', 2.2)
     rules.set_constant('fractal_torsion', 1.3)
+    rules.set_constant('inertial_force_strength', 2.0)
+    rules.set_constant('inertial_force_persistence', 0.982)
+    rules.set_constant('inertial_force_jitter', 0.42)
+    rules.set_constant('fluid_drag', 0.08)
     rules.set_constant('max_force', 18.0)
     rules.set_constant('threading_threshold', 240.0)
     rules.set_constant('threading_pairwork_threshold', 180000.0)
@@ -2015,13 +2045,11 @@ def main(
     growth_profile='normal',
     view_mode='territory',
     world_size=120,
-    molecule_count=200,
-    interaction_distance=26.0
+    molecule_count=200
 ):
     """Main simulation loop"""
     rules = create_custom_rules()
     profile_name, profile_settings = apply_growth_profile(rules, growth_profile)
-    rules.set_constant('interaction_distance', max(0.0, float(interaction_distance)))
 
     simulation = PrimeChemistry(rules, size=world_size, molecule_count=molecule_count, max_number=10000)
     simulation.set_growth_profile(profile_name, profile_settings)
@@ -2091,8 +2119,6 @@ def parse_args():
                         help='World side size in simulation units')
     parser.add_argument('--molecules', type=int, default=200,
                         help='Initial molecule count')
-    parser.add_argument('--interaction-distance', type=float, default=26.0,
-                        help='Max distance for force interactions (0 = unlimited, slower)')
     return parser.parse_args()
 
 
@@ -2103,6 +2129,5 @@ if __name__ == "__main__":
         growth_profile=args.growth,
         view_mode=args.view,
         world_size=max(10.0, float(args.size)),
-        molecule_count=max(10, int(args.molecules)),
-        interaction_distance=max(0.0, float(args.interaction_distance))
+        molecule_count=max(10, int(args.molecules))
     )

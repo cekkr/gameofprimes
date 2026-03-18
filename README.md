@@ -11,6 +11,7 @@ Prime-factor chemistry simulation with two visual modes:
 - Index-based molecular mass: `mass = Σ(prime_index * exponent)`.
 - Prime chemistry force field with:
   same-prime repulsion, even-index attraction, odd-index repulsion, mixed-parity orbital coupling, and recursive fractal polarization.
+- Persistent inertial drive in a fluid-like medium (drag + jitter), so molecules keep moving even without immediate neighbors.
 - Population dynamics with fusion/fission/decomposition.
 - Territory resource extraction and regeneration.
 - Dynamic growth zones that move, relocate, and change count over time.
@@ -59,14 +60,6 @@ Run denser or wider worlds:
 ```bash
 python3 main.py --size 120 --molecules 200
 python3 main.py --size 180 --molecules 500
-```
-
-Tune performance/physics tradeoff:
-
-```bash
-python3 main.py --interaction-distance 26
-python3 main.py --interaction-distance 20   # faster, more local
-python3 main.py --interaction-distance 0    # unlimited (slowest)
 ```
 
 ## Controls
