@@ -11,6 +11,17 @@ from dataclasses import dataclass
 from typing import Callable, List, Dict, Optional, Tuple
 
 
+def load_default_font(size: int):
+    """Try to load pygame font support. Return None when fonts are unavailable."""
+    try:
+        import pygame.font as pygame_font
+        if not pygame_font.get_init():
+            pygame_font.init()
+        return pygame_font.Font(None, size)
+    except Exception:
+        return None
+
+
 @dataclass
 class InteractionRule:
     """Defines how molecules interact based on their prime factors"""
@@ -470,7 +481,9 @@ class Visualizer:
 
         # UI state
         self.selected_molecule = None
-        self.font = pygame.font.Font(None, 36)
+        self.font = load_default_font(36)
+        if self.font is None:
+            print("Warning: pygame font module unavailable. 3D text overlays are disabled.")
 
     def get_ray_from_mouse(self, mouse_pos):
         """Convert mouse position to a ray in world space"""
@@ -631,6 +644,8 @@ class Visualizer:
 
     def draw_text(self, text, position, color=(255, 255, 255)):
         """Draw 2D text overlay"""
+        if self.font is None:
+            return
         text_surface = self.font.render(text, True, color)
         self.display.blit(text_surface, position)
 
@@ -959,8 +974,10 @@ class TerritoryVisualizer:
         self.show_info = True
         self.profile_name = 'normal'
 
-        self.font = pygame.font.Font(None, 24)
-        self.title_font = pygame.font.Font(None, 34)
+        self.font = load_default_font(24)
+        self.title_font = load_default_font(34)
+        if self.font is None or self.title_font is None:
+            print("Warning: pygame font module unavailable. Territory text overlays are disabled.")
 
         territory_px = min(height - 40, width - 360)
         self.territory_rect = pygame.Rect(20, 20, territory_px, territory_px)
@@ -1046,6 +1063,9 @@ class TerritoryVisualizer:
                 (legend_rect.left + offset, legend_rect.bottom)
             )
         pygame.draw.rect(self.display, (225, 225, 225), legend_rect, 1)
+        if self.font is None:
+            return
+
         self.display.blit(self.font.render("Low wealth", True, (220, 220, 220)),
                           (legend_rect.left, legend_rect.bottom + 6))
         high_text = self.font.render("High wealth", True, (220, 220, 220))
@@ -1075,14 +1095,15 @@ class TerritoryVisualizer:
             "1 slow growth | 2 normal | 3 fast",
         ]
 
-        y_pos = self.sidebar_rect.top + 16
-        for index, line in enumerate(lines):
-            if index == 0:
-                label = self.title_font.render(line, True, (245, 245, 250))
-            else:
-                label = self.font.render(line, True, (215, 215, 225))
-            self.display.blit(label, (self.sidebar_rect.left + 16, y_pos))
-            y_pos += 22 if index == 0 else 20
+        if self.font is not None and self.title_font is not None:
+            y_pos = self.sidebar_rect.top + 16
+            for index, line in enumerate(lines):
+                if index == 0:
+                    label = self.title_font.render(line, True, (245, 245, 250))
+                else:
+                    label = self.font.render(line, True, (215, 215, 225))
+                self.display.blit(label, (self.sidebar_rect.left + 16, y_pos))
+                y_pos += 22 if index == 0 else 20
 
         self.draw_wealth_legend(max_wealth)
 
