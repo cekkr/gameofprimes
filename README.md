@@ -51,6 +51,13 @@ Adjust FPS:
 python3 main.py --fps 60
 ```
 
+Run denser or wider worlds:
+
+```bash
+python3 main.py --size 120 --molecules 260
+python3 main.py --size 180 --molecules 500
+```
+
 ## Controls
 
 ### Territory View (default)

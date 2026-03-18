@@ -238,15 +238,15 @@ class SimulationRules:
             'region_partitions': 4.0,
             'interaction_region_range': 1.0,
             'interaction_distance': 0.0,
-            'growth_zone_speed': 8.0,
-            'growth_zone_jitter': 1.6,
-            'growth_zone_radius': 9.0,
-            'growth_zone_strength': 0.22,
-            'growth_zone_relocation_chance': 0.004,
-            'growth_zone_spawn_chance': 0.010,
-            'growth_zone_despawn_chance': 0.007,
-            'growth_zone_min_count': 3.0,
-            'growth_zone_max_count': 10.0,
+            'growth_zone_speed': 14.0,
+            'growth_zone_jitter': 2.0,
+            'growth_zone_radius': 8.0,
+            'growth_zone_strength': 0.24,
+            'growth_zone_relocation_chance': 0.010,
+            'growth_zone_spawn_chance': 0.020,
+            'growth_zone_despawn_chance': 0.015,
+            'growth_zone_min_count': 4.0,
+            'growth_zone_max_count': 14.0,
             'resource_mobility': 0.8,
             'proximity_repulsion_distance': 1.25,
             'proximity_repulsion_strength': 0.55
@@ -821,6 +821,13 @@ class PrimeChemistry:
         if self.growth_zone_count > min_zones and random.random() < step_despawn_probability:
             self._despawn_growth_zone()
 
+        # Guaranteed periodic churn so zones never become effectively static.
+        if self.step_count > 0 and self.step_count % 240 == 0:
+            if self.growth_zone_count < max_zones and random.random() < 0.65:
+                self._spawn_growth_zone()
+            elif self.growth_zone_count > min_zones and random.random() < 0.65:
+                self._despawn_growth_zone()
+
         if self.growth_zone_count <= 0:
             return
 
@@ -849,6 +856,11 @@ class PrimeChemistry:
                 self.growth_zone_positions[zone_idx] = self._random_growth_zone_position()
                 self.growth_zone_velocities[zone_idx] = self._random_growth_zone_velocity()
                 self.growth_zone_strengths[zone_idx] = np.random.uniform(0.7, 1.35)
+
+        if self.step_count > 0 and self.step_count % 240 == 0 and self.growth_zone_count > 0:
+            shuffled_idx = random.randrange(self.growth_zone_count)
+            self.growth_zone_positions[shuffled_idx] = self._random_growth_zone_position()
+            self.growth_zone_velocities[shuffled_idx] = self._random_growth_zone_velocity()
 
     def _apply_growth_zones(self, time_scale: float):
         if self.growth_zone_count <= 0:
@@ -988,7 +1000,11 @@ class PrimeChemistry:
         """Check and apply all relevant reaction rules"""
         for rule in self.rules.reaction_rules:
             if rule.condition(mol1.prime_factors, mol2.prime_factors):
-                scaled_probability = 1.0 - (1.0 - rule.probability) ** max(time_scale, 0.0)
+                # Probabilities in rules are calibrated for dt ~= 0.01 simulation steps.
+                # Keep that baseline and scale by relative dt instead of absolute dt.
+                reaction_scale = max(time_scale, 0.0) / 0.01
+                scaled_probability = 1.0 - (1.0 - rule.probability) ** reaction_scale
+                scaled_probability = min(0.995, max(0.0, scaled_probability))
                 if random.random() < scaled_probability:
                     products = rule.effect(mol1, mol2)
                     if not products:
@@ -1517,19 +1533,19 @@ def create_custom_rules() -> SimulationRules:
     rules.set_constant('interaction_region_range', 1.0)
     rules.set_constant('threading_threshold', 240.0)
     rules.set_constant('threading_pairwork_threshold', 180000.0)
-    rules.set_constant('growth_zone_speed', 8.5)
-    rules.set_constant('growth_zone_jitter', 1.7)
-    rules.set_constant('growth_zone_radius', 8.0)
-    rules.set_constant('growth_zone_strength', 0.24)
-    rules.set_constant('growth_zone_relocation_chance', 0.0045)
-    rules.set_constant('growth_zone_spawn_chance', 0.012)
-    rules.set_constant('growth_zone_despawn_chance', 0.009)
-    rules.set_constant('growth_zone_min_count', 3.0)
-    rules.set_constant('growth_zone_max_count', 12.0)
+    rules.set_constant('growth_zone_speed', 16.0)
+    rules.set_constant('growth_zone_jitter', 2.2)
+    rules.set_constant('growth_zone_radius', 7.5)
+    rules.set_constant('growth_zone_strength', 0.27)
+    rules.set_constant('growth_zone_relocation_chance', 0.012)
+    rules.set_constant('growth_zone_spawn_chance', 0.028)
+    rules.set_constant('growth_zone_despawn_chance', 0.022)
+    rules.set_constant('growth_zone_min_count', 4.0)
+    rules.set_constant('growth_zone_max_count', 16.0)
     rules.set_constant('resource_mobility', 0.85)
     rules.set_constant('proximity_repulsion_distance', 1.3)
     rules.set_constant('proximity_repulsion_strength', 0.6)
-    rules.set_constant('reaction_distance', 1.7)
+    rules.set_constant('reaction_distance', 3.2)
 
     return rules
 
@@ -1730,6 +1746,9 @@ class TerritoryVisualizer:
             "1 slow growth | 2 normal | 3 fast",
         ]
 
+        if not self.auto_step and not self.paused:
+            lines.insert(2, "MANUAL mode active: press A to resume evolution")
+
         if self.font is not None and self.title_font is not None:
             y_pos = self.sidebar_rect.top + 16
             max_text_bottom = self.legend_rect().top - 12
@@ -1805,12 +1824,12 @@ class TerritoryVisualizer:
         pygame.display.flip()
 
 
-def main(fps=60, growth_profile='normal', view_mode='territory'):
+def main(fps=60, growth_profile='normal', view_mode='territory', world_size=120, molecule_count=260):
     """Main simulation loop"""
     rules = create_custom_rules()
     profile_name, profile_settings = apply_growth_profile(rules, growth_profile)
 
-    simulation = PrimeChemistry(rules, size=100, molecule_count=100, max_number=10000)
+    simulation = PrimeChemistry(rules, size=world_size, molecule_count=molecule_count, max_number=10000)
     simulation.set_growth_profile(profile_name, profile_settings)
 
     if view_mode == '3d':
@@ -1867,9 +1886,19 @@ def parse_args():
                         default='normal', help='Growth profile tuning')
     parser.add_argument('--view', choices=['territory', '3d'], default='territory',
                         help='Visualization mode (territory is default)')
+    parser.add_argument('--size', type=float, default=120.0,
+                        help='World side size in simulation units')
+    parser.add_argument('--molecules', type=int, default=260,
+                        help='Initial molecule count')
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    main(fps=args.fps, growth_profile=args.growth, view_mode=args.view)
+    main(
+        fps=args.fps,
+        growth_profile=args.growth,
+        view_mode=args.view,
+        world_size=max(10.0, float(args.size)),
+        molecule_count=max(10, int(args.molecules))
+    )
