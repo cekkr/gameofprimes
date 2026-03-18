@@ -217,7 +217,6 @@ class PrimeChemistry:
         self.max_number = max_number
         self.molecules = []
         self.temperature = 1.0
-        self.accumulated_time = 0.0  # Added to track accumulated time for reactions
 
         # Initialize random molecules
         for _ in range(molecule_count):
@@ -235,48 +234,41 @@ class PrimeChemistry:
 
         # Calculate forces and check for reactions
         forces = defaultdict(lambda: np.zeros(3))
-        time_scale = self.rules.get_constant('time_scale')
-
-        # Update accumulated time
-        self.accumulated_time += time_scale
+        time_scale = max(self.rules.get_constant('time_scale'), 1e-4)
 
         for i, mol1 in enumerate(self.molecules):
             if i in removed_molecules:
                 continue
 
-            # Random thermal motion - scaled by time_scale
-            mol1.velocity += np.random.normal(0, 0.01 * self.temperature * time_scale, 3)
+            # Thermal noise follows sqrt(dt) scaling for stable small timesteps.
+            thermal_sigma = 0.01 * self.temperature * math.sqrt(time_scale)
+            mol1.velocity += np.random.normal(0, thermal_sigma, 3)
 
             for j, mol2 in enumerate(self.molecules[i + 1:], i + 1):
                 if j in removed_molecules:
                     continue
 
-                # Apply interaction rules - forces are scaled by time_scale
+                # Apply interaction rules.
                 force1, force2 = self.apply_rules(mol1, mol2)
-                forces[i] += force1 * time_scale
-                forces[j] += force2 * time_scale
+                forces[i] += force1
+                forces[j] += force2
 
-                # Check for reactions - only attempt if enough time has accumulated
+                # Check for reactions continuously and scale probability with timestep.
                 if np.linalg.norm(mol2.position - mol1.position) < 2.0:
-                    if self.accumulated_time >= 1.0:  # Only attempt reactions after accumulating enough time
-                        reaction_products = self.attempt_reactions(mol1, mol2)
-                        if reaction_products:
-                            new_molecules.extend(reaction_products)
-                            removed_molecules.add(i)
-                            removed_molecules.add(j)
-                            break
-
-        # Reset accumulated time if it exceeds 1.0
-        if self.accumulated_time >= 1.0:
-            self.accumulated_time = 0.0
+                    reaction_products = self.attempt_reactions(mol1, mol2, time_scale)
+                    if reaction_products:
+                        new_molecules.extend(reaction_products)
+                        removed_molecules.add(i)
+                        removed_molecules.add(j)
+                        break
 
         # Update positions and velocities
         damping = self.rules.get_constant('damping')
 
         for i, molecule in enumerate(self.molecules):
             if i not in removed_molecules:
-                # Apply forces - scaled movement by time_scale
-                molecule.velocity += forces[i] * 0.1
+                # Integrate acceleration/velocity using the configured timestep.
+                molecule.velocity += forces[i] * 0.1 * time_scale
                 molecule.position += molecule.velocity * time_scale
 
                 # Apply damping
@@ -323,13 +315,12 @@ class PrimeChemistry:
 
         return total_force1, total_force2
 
-    def attempt_reactions(self, mol1: PrimeMolecule, mol2: PrimeMolecule) -> List[PrimeMolecule]:
+    def attempt_reactions(self, mol1: PrimeMolecule, mol2: PrimeMolecule, time_scale: float = 1.0) -> List[PrimeMolecule]:
         """Check and apply all relevant reaction rules"""
-        distance = np.linalg.norm(mol2.position - mol1.position)
-
         for rule in self.rules.reaction_rules:
             if rule.condition(mol1.prime_factors, mol2.prime_factors):
-                if random.random() < rule.probability:
+                scaled_probability = 1.0 - (1.0 - rule.probability) ** max(time_scale, 0.0)
+                if random.random() < scaled_probability:
                     return rule.effect(mol1, mol2)
 
         return []
