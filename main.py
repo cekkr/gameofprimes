@@ -5,10 +5,10 @@ from OpenGL.GLU import *
 import numpy as np
 import random
 import math
+import argparse
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable, List, Dict, Optional, Tuple
-import json
 
 
 @dataclass
@@ -31,6 +31,29 @@ class ReactionRule:
     effect: Callable[['PrimeMolecule', 'PrimeMolecule'], List['PrimeMolecule']]
     probability: float = 0.5
     description: str = ""
+    base_probability: Optional[float] = None
+
+
+GROWTH_PROFILES: Dict[str, Dict[str, float]] = {
+    'slow': {
+        'time_scale': 0.007,
+        'reaction_multiplier': 0.65,
+        'damping': 0.965,
+        'extraction_multiplier': 0.75
+    },
+    'normal': {
+        'time_scale': 0.01,
+        'reaction_multiplier': 1.0,
+        'damping': 0.95,
+        'extraction_multiplier': 1.0
+    },
+    'fast': {
+        'time_scale': 0.018,
+        'reaction_multiplier': 1.45,
+        'damping': 0.93,
+        'extraction_multiplier': 1.35
+    }
+}
 
 
 class SimulationRules:
@@ -55,6 +78,8 @@ class SimulationRules:
         self.interaction_rules.sort(key=lambda x: x.priority, reverse=True)
 
     def add_reaction_rule(self, rule: ReactionRule):
+        if rule.base_probability is None:
+            rule.base_probability = rule.probability
         self.reaction_rules.append(rule)
         self.reaction_rules.sort(key=lambda x: x.priority, reverse=True)
 
@@ -146,6 +171,7 @@ class PrimeMolecule:
         self.mass = math.log2(number) * 2
         self.charge = self.calculate_charge()
         self.color = self.generate_color()
+        self.wealth = max(0.05, self.mass * random.uniform(0.2, 0.9))
 
     def factorize(self, n):
         factors = defaultdict(int)
@@ -217,12 +243,25 @@ class PrimeChemistry:
         self.max_number = max_number
         self.molecules = []
         self.temperature = 1.0
+        self.territory_resolution = 96
+        self.territory_capacity = 1.0
+        self.territory = np.random.uniform(0.35, self.territory_capacity,
+                                           (self.territory_resolution, self.territory_resolution))
+        self.extraction_heat = np.zeros_like(self.territory)
+        self.total_extracted = 0.0
+        self.last_step_extraction = 0.0
+        self.extraction_multiplier = 1.0
+        self.profile_name = 'normal'
 
         # Initialize random molecules
         for _ in range(molecule_count):
             pos = [random.uniform(-size / 2, size / 2) for _ in range(3)]
             number = random.randint(2, 100)
             self.molecules.append(PrimeMolecule(number, pos))
+
+    def set_growth_profile(self, profile_name: str, profile_settings: Dict[str, float]):
+        self.profile_name = profile_name
+        self.extraction_multiplier = profile_settings['extraction_multiplier']
 
     def step(self):
         """Perform one step of the simulation"""
@@ -235,6 +274,7 @@ class PrimeChemistry:
         # Calculate forces and check for reactions
         forces = defaultdict(lambda: np.zeros(3))
         time_scale = max(self.rules.get_constant('time_scale'), 1e-4)
+        step_extracted = 0.0
 
         for i, mol1 in enumerate(self.molecules):
             if i in removed_molecules:
@@ -280,9 +320,59 @@ class PrimeChemistry:
                         molecule.position[axis] = np.sign(molecule.position[axis]) * self.size / 2
                         molecule.velocity[axis] *= -0.8
 
+                step_extracted += self.extract_resources(molecule, time_scale)
+                molecule.wealth *= max(0.0, 1.0 - 0.005 * time_scale)
+
         # Update molecule list
         self.molecules = [mol for i, mol in enumerate(self.molecules)
                          if i not in removed_molecules] + new_molecules
+        self.last_step_extraction = step_extracted
+        self.regenerate_territory(time_scale)
+
+    def world_to_territory_index(self, position: np.ndarray) -> Tuple[int, int]:
+        normalized_x = np.clip((position[0] / self.size) + 0.5, 0.0, 1.0)
+        normalized_z = np.clip((position[2] / self.size) + 0.5, 0.0, 1.0)
+        grid_x = int(normalized_x * (self.territory_resolution - 1))
+        grid_z = int(normalized_z * (self.territory_resolution - 1))
+        return grid_x, grid_z
+
+    def extract_resources(self, molecule: PrimeMolecule, time_scale: float) -> float:
+        grid_x, grid_z = self.world_to_territory_index(molecule.position)
+        available = self.territory[grid_z, grid_x]
+
+        extraction_rate = (0.025 + 0.008 * math.log2(max(molecule.number, 2))) * self.extraction_multiplier
+        extracted = min(available, extraction_rate * time_scale)
+
+        if extracted <= 0:
+            return 0.0
+
+        self.territory[grid_z, grid_x] -= extracted
+        self.extraction_heat[grid_z, grid_x] += extracted * 3.0
+        molecule.wealth += extracted * 12.0
+        self.total_extracted += extracted
+        return extracted
+
+    def regenerate_territory(self, time_scale: float):
+        regeneration_rate = 0.14 * time_scale
+        diffusion_rate = 0.06 * time_scale
+
+        self.territory += (self.territory_capacity - self.territory) * regeneration_rate
+        neighbors = (
+            np.roll(self.territory, 1, axis=0) +
+            np.roll(self.territory, -1, axis=0) +
+            np.roll(self.territory, 1, axis=1) +
+            np.roll(self.territory, -1, axis=1)
+        ) * 0.25
+        self.territory = self.territory * (1.0 - diffusion_rate) + neighbors * diffusion_rate
+        self.territory = np.clip(self.territory, 0.0, self.territory_capacity)
+        self.extraction_heat *= max(0.0, 1.0 - 2.4 * time_scale)
+
+    def wealth_stats(self) -> Tuple[float, float, float]:
+        if not self.molecules:
+            return 0.0, 0.0, 0.0
+
+        wealth_values = np.array([molecule.wealth for molecule in self.molecules])
+        return float(np.min(wealth_values)), float(np.mean(wealth_values)), float(np.max(wealth_values))
 
     def apply_rules(self, mol1: PrimeMolecule, mol2: PrimeMolecule) -> Tuple[np.ndarray, np.ndarray]:
         """Apply all relevant interaction rules between two molecules"""
@@ -321,7 +411,18 @@ class PrimeChemistry:
             if rule.condition(mol1.prime_factors, mol2.prime_factors):
                 scaled_probability = 1.0 - (1.0 - rule.probability) ** max(time_scale, 0.0)
                 if random.random() < scaled_probability:
-                    return rule.effect(mol1, mol2)
+                    products = rule.effect(mol1, mol2)
+                    if not products:
+                        return []
+
+                    inherited_wealth = (mol1.wealth + mol2.wealth) * 0.85
+                    new_entities = [product for product in products if product not in (mol1, mol2)]
+                    if new_entities:
+                        shared_wealth = inherited_wealth / len(new_entities)
+                        for product in new_entities:
+                            product.wealth += shared_wealth
+
+                    return products
 
         return []
 
@@ -742,8 +843,8 @@ def create_custom_rules() -> SimulationRules:
     # Fission reaction for large molecules
     def fission_condition(factors1, factors2):
         # Calculate the total number for each molecule based on their prime factors
-        num1 = np.prod([prime ** count for prime, count in factors1.items()])
-        num2 = np.prod([prime ** count for prime, count in factors2.items()])
+        num1 = math.prod(prime ** count for prime, count in factors1.items())
+        num2 = math.prod(prime ** count for prime, count in factors2.items())
         # React if one molecule is significantly larger than the other
         return max(num1, num2) > 100 and min(num1, num2) < 50
 
@@ -826,20 +927,216 @@ def create_custom_rules() -> SimulationRules:
     return rules
 
 
-def main(fps=60):
+def apply_growth_profile(rules: SimulationRules, profile_name: str) -> Tuple[str, Dict[str, float]]:
+    normalized_profile = profile_name.lower()
+    if normalized_profile not in GROWTH_PROFILES:
+        normalized_profile = 'normal'
+
+    settings = GROWTH_PROFILES[normalized_profile]
+    rules.set_constant('time_scale', settings['time_scale'])
+    rules.set_constant('damping', settings['damping'])
+
+    for rule in rules.reaction_rules:
+        base_probability = rule.base_probability if rule.base_probability is not None else rule.probability
+        rule.probability = min(0.95, max(0.001, base_probability * settings['reaction_multiplier']))
+
+    return normalized_profile, settings
+
+
+class TerritoryVisualizer:
+    """2D territorial view: resources, extraction heat, and wealth-colored population."""
+
+    def __init__(self, width=1280, height=800):
+        pygame.init()
+        self.display = pygame.display.set_mode((width, height))
+        pygame.display.set_caption("Game of Primes: Territory Economy")
+        self.width = width
+        self.height = height
+
+        self.paused = False
+        self.auto_step = True
+        self.show_vectors = True
+        self.show_info = True
+        self.profile_name = 'normal'
+
+        self.font = pygame.font.Font(None, 24)
+        self.title_font = pygame.font.Font(None, 34)
+
+        territory_px = min(height - 40, width - 360)
+        self.territory_rect = pygame.Rect(20, 20, territory_px, territory_px)
+        self.sidebar_rect = pygame.Rect(self.territory_rect.right + 20, 20,
+                                        width - self.territory_rect.right - 40, height - 40)
+
+    def set_profile(self, profile_name: str):
+        self.profile_name = profile_name
+
+    def handle_events(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE:
+                    self.paused = not self.paused
+                elif event.key == pygame.K_a:
+                    self.auto_step = not self.auto_step
+                elif event.key == pygame.K_i:
+                    self.show_info = not self.show_info
+                elif event.key == pygame.K_v:
+                    self.show_vectors = not self.show_vectors
+                elif event.key == pygame.K_RIGHT and self.paused:
+                    return 'step'
+                elif event.key == pygame.K_1:
+                    return ('profile', 'slow')
+                elif event.key == pygame.K_2:
+                    return ('profile', 'normal')
+                elif event.key == pygame.K_3:
+                    return ('profile', 'fast')
+
+        return True
+
+    @staticmethod
+    def wealth_to_color(wealth: float, max_wealth: float) -> Tuple[int, int, int]:
+        if max_wealth <= 0:
+            return 40, 140, 220
+
+        t = np.clip(wealth / max_wealth, 0.0, 1.0)
+        low = np.array([40, 130, 220], dtype=float)
+        mid = np.array([90, 220, 140], dtype=float)
+        high = np.array([250, 205, 70], dtype=float)
+
+        if t < 0.5:
+            local_t = t / 0.5
+            color = low + (mid - low) * local_t
+        else:
+            local_t = (t - 0.5) / 0.5
+            color = mid + (high - mid) * local_t
+
+        return tuple(color.astype(int))
+
+    def world_to_screen(self, simulation: PrimeChemistry, position: np.ndarray) -> Tuple[int, int]:
+        x_norm = np.clip((position[0] / simulation.size) + 0.5, 0.0, 1.0)
+        y_norm = np.clip((position[2] / simulation.size) + 0.5, 0.0, 1.0)
+
+        x_pos = int(self.territory_rect.left + x_norm * self.territory_rect.width)
+        y_pos = int(self.territory_rect.top + y_norm * self.territory_rect.height)
+        return x_pos, y_pos
+
+    def build_territory_surface(self, simulation: PrimeChemistry) -> pygame.Surface:
+        richness = np.clip(simulation.territory / simulation.territory_capacity, 0.0, 1.0)
+        heat = np.clip(simulation.extraction_heat, 0.0, 1.0)
+
+        red = np.clip(22 + richness * 70 + heat * 180, 0, 255)
+        green = np.clip(30 + richness * 160 + heat * 40, 0, 255)
+        blue = np.clip(20 + richness * 70, 0, 255)
+
+        terrain_rgb = np.stack([red, green, blue], axis=-1).astype(np.uint8)
+        terrain_surface = pygame.surfarray.make_surface(np.transpose(terrain_rgb, (1, 0, 2)))
+        return pygame.transform.smoothscale(terrain_surface, self.territory_rect.size)
+
+    def draw_wealth_legend(self, max_wealth: float):
+        legend_rect = pygame.Rect(self.sidebar_rect.left + 20, self.sidebar_rect.bottom - 80,
+                                  self.sidebar_rect.width - 40, 18)
+        for offset in range(legend_rect.width):
+            ratio = offset / max(1, legend_rect.width - 1)
+            color = self.wealth_to_color(ratio * max(max_wealth, 1.0), max(max_wealth, 1.0))
+            pygame.draw.line(
+                self.display,
+                color,
+                (legend_rect.left + offset, legend_rect.top),
+                (legend_rect.left + offset, legend_rect.bottom)
+            )
+        pygame.draw.rect(self.display, (225, 225, 225), legend_rect, 1)
+        self.display.blit(self.font.render("Low wealth", True, (220, 220, 220)),
+                          (legend_rect.left, legend_rect.bottom + 6))
+        high_text = self.font.render("High wealth", True, (220, 220, 220))
+        self.display.blit(high_text, (legend_rect.right - high_text.get_width(), legend_rect.bottom + 6))
+
+    def draw_sidebar(self, simulation: PrimeChemistry):
+        pygame.draw.rect(self.display, (24, 24, 32), self.sidebar_rect)
+        pygame.draw.rect(self.display, (72, 72, 88), self.sidebar_rect, 2)
+
+        min_wealth, avg_wealth, max_wealth = simulation.wealth_stats()
+        lines = [
+            "Territory Economy View",
+            f"Growth profile: {self.profile_name.upper()}",
+            f"Population: {len(simulation.molecules)}",
+            f"Temperature: {simulation.temperature:.2f}",
+            f"Avg wealth: {avg_wealth:.2f}",
+            f"Wealth range: {min_wealth:.2f} -> {max_wealth:.2f}",
+            f"Extracted this step: {simulation.last_step_extraction:.4f}",
+            f"Total extracted: {simulation.total_extracted:.2f}",
+            f"Resource richness: {float(np.mean(simulation.territory)):.3f}",
+            "",
+            "Controls:",
+            "SPACE pause/resume",
+            "RIGHT single-step when paused",
+            "A toggle auto-step",
+            "V toggle velocity vectors",
+            "1 slow growth | 2 normal | 3 fast",
+        ]
+
+        y_pos = self.sidebar_rect.top + 16
+        for index, line in enumerate(lines):
+            if index == 0:
+                label = self.title_font.render(line, True, (245, 245, 250))
+            else:
+                label = self.font.render(line, True, (215, 215, 225))
+            self.display.blit(label, (self.sidebar_rect.left + 16, y_pos))
+            y_pos += 22 if index == 0 else 20
+
+        self.draw_wealth_legend(max_wealth)
+
+    def draw(self, simulation: PrimeChemistry):
+        self.display.fill((12, 14, 20))
+
+        terrain_surface = self.build_territory_surface(simulation)
+        self.display.blit(terrain_surface, self.territory_rect.topleft)
+        pygame.draw.rect(self.display, (235, 235, 235), self.territory_rect, 2)
+
+        if simulation.molecules:
+            wealth_cap = max(molecule.wealth for molecule in simulation.molecules)
+        else:
+            wealth_cap = 1.0
+
+        for molecule in simulation.molecules:
+            x_pos, y_pos = self.world_to_screen(simulation, molecule.position)
+            radius = max(2, int(2 + 0.35 * math.log2(max(molecule.number, 2))))
+            color = self.wealth_to_color(molecule.wealth, wealth_cap)
+
+            if self.show_vectors:
+                vector_scale = 22
+                velocity_end = (
+                    int(x_pos + molecule.velocity[0] * vector_scale),
+                    int(y_pos + molecule.velocity[2] * vector_scale)
+                )
+                pygame.draw.line(self.display, (245, 245, 245), (x_pos, y_pos), velocity_end, 1)
+
+            pygame.draw.circle(self.display, color, (x_pos, y_pos), radius)
+            pygame.draw.circle(self.display, (16, 16, 20), (x_pos, y_pos), radius, 1)
+
+        if self.show_info:
+            self.draw_sidebar(simulation)
+
+        pygame.display.flip()
+
+
+def main(fps=60, growth_profile='normal', view_mode='territory'):
     """Main simulation loop"""
-    # Create custom rules
     rules = create_custom_rules()
-    rules.set_constant('time_scale', 0.01)
+    profile_name, profile_settings = apply_growth_profile(rules, growth_profile)
 
-    # Initialize simulation
     simulation = PrimeChemistry(rules, size=10, molecule_count=50, max_number=1000)
-    visualizer = Visualizer(width=1024, height=768)
+    simulation.set_growth_profile(profile_name, profile_settings)
 
-    # Timing variables
+    if view_mode == '3d':
+        visualizer = Visualizer(width=1024, height=768)
+    else:
+        visualizer = TerritoryVisualizer(width=1280, height=800)
+        visualizer.set_profile(profile_name)
+
     clock = pygame.time.Clock()
     frame_time = 1.0 / fps
-    accumulated_time = 0
+    accumulated_time = 0.0
     last_time = pygame.time.get_ticks() / 1000.0
 
     running = True
@@ -849,12 +1146,17 @@ def main(fps=60):
         last_time = current_time
         accumulated_time += delta_time
 
-        # Handle events
         event_result = visualizer.handle_events()
-        if event_result == False:
+        if event_result is False:
             running = False
+            continue
 
-        # Update simulation
+        if isinstance(event_result, tuple) and event_result[0] == 'profile':
+            profile_name, profile_settings = apply_growth_profile(rules, event_result[1])
+            simulation.set_growth_profile(profile_name, profile_settings)
+            if hasattr(visualizer, 'set_profile'):
+                visualizer.set_profile(profile_name)
+
         if not visualizer.paused:
             while accumulated_time >= frame_time:
                 if visualizer.auto_step:
@@ -863,12 +1165,22 @@ def main(fps=60):
         elif event_result == 'step':
             simulation.step()
 
-        # Render
         visualizer.draw(simulation)
         clock.tick(fps)
 
     pygame.quit()
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Prime chemistry and territory economy simulation")
+    parser.add_argument('--fps', type=int, default=30, help='Target frames per second')
+    parser.add_argument('--growth', choices=sorted(GROWTH_PROFILES.keys()),
+                        default='normal', help='Growth profile tuning')
+    parser.add_argument('--view', choices=['territory', '3d'], default='territory',
+                        help='Visualization mode (territory is default)')
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    main(fps=30)
+    args = parse_args()
+    main(fps=args.fps, growth_profile=args.growth, view_mode=args.view)
