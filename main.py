@@ -237,7 +237,15 @@ class SimulationRules:
             'threading_pairwork_threshold': 180000.0,
             'region_partitions': 4.0,
             'interaction_region_range': 1.0,
-            'interaction_distance': 0.0
+            'interaction_distance': 0.0,
+            'growth_zone_speed': 8.0,
+            'growth_zone_jitter': 1.6,
+            'growth_zone_radius': 9.0,
+            'growth_zone_strength': 0.22,
+            'growth_zone_relocation_chance': 0.004,
+            'resource_mobility': 0.8,
+            'proximity_repulsion_distance': 1.25,
+            'proximity_repulsion_strength': 0.55
         }
 
     def add_interaction_rule(self, rule: InteractionRule):
@@ -414,6 +422,14 @@ class PrimeChemistry:
         self.territory_capacity = 1.0
         self.territory = np.random.uniform(0.35, self.territory_capacity,
                                            (self.territory_resolution, self.territory_resolution))
+        grid_axis = np.arange(self.territory_resolution, dtype=float)
+        self.territory_grid_x, self.territory_grid_z = np.meshgrid(grid_axis, grid_axis)
+        self.growth_zone_count = 3
+        self.growth_zone_positions = np.random.uniform(
+            0.0, self.territory_resolution - 1.0, (self.growth_zone_count, 2)
+        )
+        random_angles = np.random.uniform(0.0, 2.0 * math.pi, self.growth_zone_count)
+        self.growth_zone_velocities = np.column_stack((np.cos(random_angles), np.sin(random_angles)))
         self.extraction_heat = np.zeros_like(self.territory)
         self.total_extracted = 0.0
         self.last_step_extraction = 0.0
@@ -511,28 +527,49 @@ class PrimeChemistry:
         molecules = self.molecules
         interaction_distance = self.rules.get_constant('interaction_distance')
         distance_limit_sq = interaction_distance * interaction_distance if interaction_distance > 0.0 else 0.0
+        repulsion_distance = self.rules.get_constant('proximity_repulsion_distance')
+        repulsion_strength = self.rules.get_constant('proximity_repulsion_strength')
+        repulsion_distance_sq = repulsion_distance * repulsion_distance if repulsion_distance > 0.0 else 0.0
 
         for left_indices, right_indices, same_region in region_pair_chunk:
             if same_region:
                 for left_offset, i in enumerate(left_indices):
                     mol1 = molecules[i]
                     for j in right_indices[left_offset + 1:]:
-                        if distance_limit_sq > 0.0:
-                            delta = molecules[j].position - mol1.position
-                            if np.dot(delta, delta) > distance_limit_sq:
-                                continue
+                        delta = molecules[j].position - mol1.position
+                        distance_sq = float(np.dot(delta, delta))
+                        if distance_limit_sq > 0.0 and distance_sq > distance_limit_sq:
+                            continue
+
                         force1, force2 = self.apply_rules(mol1, molecules[j])
+                        if repulsion_distance_sq > 0.0 and 1e-8 < distance_sq < repulsion_distance_sq:
+                            distance = math.sqrt(distance_sq)
+                            direction = delta / distance
+                            repulsion_scale = repulsion_strength * (1.0 - distance / repulsion_distance)
+                            repulsion_vector = -direction * repulsion_scale
+                            force1 += repulsion_vector
+                            force2 -= repulsion_vector
+
                         local_forces[i] += force1
                         local_forces[j] += force2
             else:
                 for i in left_indices:
                     mol1 = molecules[i]
                     for j in right_indices:
-                        if distance_limit_sq > 0.0:
-                            delta = molecules[j].position - mol1.position
-                            if np.dot(delta, delta) > distance_limit_sq:
-                                continue
+                        delta = molecules[j].position - mol1.position
+                        distance_sq = float(np.dot(delta, delta))
+                        if distance_limit_sq > 0.0 and distance_sq > distance_limit_sq:
+                            continue
+
                         force1, force2 = self.apply_rules(mol1, molecules[j])
+                        if repulsion_distance_sq > 0.0 and 1e-8 < distance_sq < repulsion_distance_sq:
+                            distance = math.sqrt(distance_sq)
+                            direction = delta / distance
+                            repulsion_scale = repulsion_strength * (1.0 - distance / repulsion_distance)
+                            repulsion_vector = -direction * repulsion_scale
+                            force1 += repulsion_vector
+                            force2 -= repulsion_vector
+
                         local_forces[i] += force1
                         local_forces[j] += force2
 
@@ -677,11 +714,14 @@ class PrimeChemistry:
 
         # Update positions and velocities
         damping = self.rules.get_constant('damping')
+        resource_mobility = self.rules.get_constant('resource_mobility')
 
         for i, molecule in enumerate(self.molecules):
             if i not in removed_molecules:
                 # Integrate acceleration/velocity using the configured timestep.
                 molecule.velocity += forces[i] * 0.1 * time_scale
+                if resource_mobility > 0.0:
+                    molecule.velocity += self.resource_gradient_vector(molecule) * resource_mobility * time_scale
                 molecule.position += molecule.velocity * time_scale
 
                 # Apply damping
@@ -712,6 +752,59 @@ class PrimeChemistry:
         grid_z = int(normalized_z * (self.territory_resolution - 1))
         return grid_x, grid_z
 
+    def _update_growth_zones(self, time_scale: float):
+        zone_speed = self.rules.get_constant('growth_zone_speed')
+        zone_jitter = self.rules.get_constant('growth_zone_jitter')
+        relocation_chance = self.rules.get_constant('growth_zone_relocation_chance')
+        effective_dt = max(time_scale, 1e-4)
+
+        random_jitter = np.random.normal(0.0, zone_jitter * math.sqrt(effective_dt), self.growth_zone_velocities.shape)
+        self.growth_zone_velocities += random_jitter
+
+        velocity_norms = np.linalg.norm(self.growth_zone_velocities, axis=1, keepdims=True)
+        velocity_norms = np.where(velocity_norms < 1e-8, 1.0, velocity_norms)
+        self.growth_zone_velocities /= velocity_norms
+
+        self.growth_zone_positions += self.growth_zone_velocities * (zone_speed * effective_dt)
+
+        max_coord = self.territory_resolution - 1.0
+        for zone_idx in range(self.growth_zone_count):
+            for axis in range(2):
+                if self.growth_zone_positions[zone_idx, axis] < 0.0:
+                    self.growth_zone_positions[zone_idx, axis] = 0.0
+                    self.growth_zone_velocities[zone_idx, axis] *= -1.0
+                elif self.growth_zone_positions[zone_idx, axis] > max_coord:
+                    self.growth_zone_positions[zone_idx, axis] = max_coord
+                    self.growth_zone_velocities[zone_idx, axis] *= -1.0
+
+            if random.random() < relocation_chance:
+                self.growth_zone_positions[zone_idx] = np.random.uniform(0.0, max_coord, 2)
+                new_angle = np.random.uniform(0.0, 2.0 * math.pi)
+                self.growth_zone_velocities[zone_idx] = np.array([math.cos(new_angle), math.sin(new_angle)])
+
+    def _apply_growth_zones(self, time_scale: float):
+        zone_radius = max(1e-3, self.rules.get_constant('growth_zone_radius'))
+        zone_strength = self.rules.get_constant('growth_zone_strength')
+        radius_sq = zone_radius * zone_radius
+
+        for zone_position in self.growth_zone_positions:
+            delta_x = self.territory_grid_x - zone_position[0]
+            delta_z = self.territory_grid_z - zone_position[1]
+            influence = np.exp(-(delta_x * delta_x + delta_z * delta_z) / (2.0 * radius_sq))
+            self.territory += influence * zone_strength * time_scale
+            self.extraction_heat += influence * 0.05 * time_scale
+
+    def resource_gradient_vector(self, molecule: PrimeMolecule) -> np.ndarray:
+        grid_x, grid_z = self.world_to_territory_index(molecule.position)
+        left_x = max(0, grid_x - 1)
+        right_x = min(self.territory_resolution - 1, grid_x + 1)
+        up_z = max(0, grid_z - 1)
+        down_z = min(self.territory_resolution - 1, grid_z + 1)
+
+        gradient_x = self.territory[grid_z, right_x] - self.territory[grid_z, left_x]
+        gradient_z = self.territory[down_z, grid_x] - self.territory[up_z, grid_x]
+        return np.array([gradient_x, 0.0, gradient_z])
+
     def extract_resources(self, molecule: PrimeMolecule, time_scale: float) -> float:
         grid_x, grid_z = self.world_to_territory_index(molecule.position)
         available = self.territory[grid_z, grid_x]
@@ -740,6 +833,8 @@ class PrimeChemistry:
             np.roll(self.territory, -1, axis=1)
         ) * 0.25
         self.territory = self.territory * (1.0 - diffusion_rate) + neighbors * diffusion_rate
+        self._update_growth_zones(time_scale)
+        self._apply_growth_zones(time_scale)
         self.territory = np.clip(self.territory, 0.0, self.territory_capacity)
         self.extraction_heat *= max(0.0, 1.0 - 2.4 * time_scale)
 
@@ -1352,6 +1447,15 @@ def create_custom_rules() -> SimulationRules:
     rules.set_constant('interaction_region_range', 1.0)
     rules.set_constant('threading_threshold', 240.0)
     rules.set_constant('threading_pairwork_threshold', 180000.0)
+    rules.set_constant('growth_zone_speed', 8.5)
+    rules.set_constant('growth_zone_jitter', 1.7)
+    rules.set_constant('growth_zone_radius', 8.0)
+    rules.set_constant('growth_zone_strength', 0.24)
+    rules.set_constant('growth_zone_relocation_chance', 0.0045)
+    rules.set_constant('resource_mobility', 0.85)
+    rules.set_constant('proximity_repulsion_distance', 1.3)
+    rules.set_constant('proximity_repulsion_strength', 0.6)
+    rules.set_constant('reaction_distance', 1.7)
 
     return rules
 
@@ -1521,6 +1625,7 @@ class TerritoryVisualizer:
             f"Profile: {self.profile_name.upper()} | Steps: {simulation.step_count}",
             f"Domain split: {simulation.region_partitions}x{simulation.region_partitions} | Active regions: {simulation.last_region_count}",
             f"Threaded forces: {'ON' if simulation.last_threaded_forces else 'OFF'} | Pair work: {simulation.last_pairwork}",
+            f"Proximity repulsion: d={simulation.rules.get_constant('proximity_repulsion_distance'):.2f}",
             "",
             "Population & Motion",
             f"Population: {len(simulation.molecules)} ({pop_delta_sign}{pop_delta} over {window_steps} steps)",
@@ -1539,6 +1644,7 @@ class TerritoryVisualizer:
             f"Richness mean: {richness:.3f}",
             f"Depleted area (<20%): {depleted_ratio * 100:.1f}%",
             f"Hotspot intensity: {hotspot_heat:.3f}",
+            f"Moving growth zones: {simulation.growth_zone_count}",
             "",
             "Controls:",
             "SPACE pause/resume",
@@ -1578,6 +1684,16 @@ class TerritoryVisualizer:
         terrain_surface = self.build_territory_surface(simulation)
         self.display.blit(terrain_surface, self.territory_rect.topleft)
         pygame.draw.rect(self.display, (235, 235, 235), self.territory_rect, 2)
+
+        zone_radius_cells = simulation.rules.get_constant('growth_zone_radius')
+        zone_radius_px = max(4, int(zone_radius_cells * self.territory_rect.width / simulation.territory_resolution))
+        for zone_position in simulation.growth_zone_positions:
+            zone_x = int(self.territory_rect.left + (zone_position[0] / (simulation.territory_resolution - 1))
+                         * self.territory_rect.width)
+            zone_y = int(self.territory_rect.top + (zone_position[1] / (simulation.territory_resolution - 1))
+                         * self.territory_rect.height)
+            pygame.draw.circle(self.display, (255, 212, 120), (zone_x, zone_y), zone_radius_px, 1)
+            pygame.draw.circle(self.display, (255, 235, 180), (zone_x, zone_y), 2)
 
         if simulation.molecules:
             wealth_cap = max(molecule.wealth for molecule in simulation.molecules)
