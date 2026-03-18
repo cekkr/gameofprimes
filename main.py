@@ -6,20 +6,154 @@ import numpy as np
 import random
 import math
 import argparse
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Callable, List, Dict, Optional, Tuple
 
 
-def load_default_font(size: int):
-    """Try to load pygame font support. Return None when fonts are unavailable."""
+class UIFont:
+    """Unified wrapper over pygame.freetype / pygame.font render APIs."""
+
+    def __init__(self, backend: str, font_object, size: int):
+        self.backend = backend
+        self.font = font_object
+        self.size = size
+
+    def render(self, text: str, antialias: bool, color: Tuple[int, int, int]) -> pygame.Surface:
+        if self.backend == 'pygame_freetype':
+            rendered_surface, _ = self.font.render(text, fgcolor=color, size=self.size)
+            return rendered_surface
+        if self.backend == 'bitmap':
+            return self.font.render(text, color)
+        return self.font.render(text, antialias, color)
+
+
+class BitmapFont:
+    """Minimal built-in bitmap font fallback for environments without pygame font modules."""
+
+    GLYPHS = {
+        ' ': ("000", "000", "000", "000", "000"),
+        '?': ("111", "001", "010", "000", "010"),
+        '0': ("111", "101", "101", "101", "111"),
+        '1': ("010", "110", "010", "010", "111"),
+        '2': ("111", "001", "111", "100", "111"),
+        '3': ("111", "001", "111", "001", "111"),
+        '4': ("101", "101", "111", "001", "001"),
+        '5': ("111", "100", "111", "001", "111"),
+        '6': ("111", "100", "111", "101", "111"),
+        '7': ("111", "001", "010", "100", "100"),
+        '8': ("111", "101", "111", "101", "111"),
+        '9': ("111", "101", "111", "001", "111"),
+        'A': ("010", "101", "111", "101", "101"),
+        'B': ("110", "101", "110", "101", "110"),
+        'C': ("011", "100", "100", "100", "011"),
+        'D': ("110", "101", "101", "101", "110"),
+        'E': ("111", "100", "110", "100", "111"),
+        'F': ("111", "100", "110", "100", "100"),
+        'G': ("011", "100", "101", "101", "011"),
+        'H': ("101", "101", "111", "101", "101"),
+        'I': ("111", "010", "010", "010", "111"),
+        'J': ("111", "001", "001", "101", "111"),
+        'K': ("101", "101", "110", "101", "101"),
+        'L': ("100", "100", "100", "100", "111"),
+        'M': ("101", "111", "101", "101", "101"),
+        'N': ("101", "111", "111", "111", "101"),
+        'O': ("111", "101", "101", "101", "111"),
+        'P': ("111", "101", "111", "100", "100"),
+        'Q': ("111", "101", "101", "111", "001"),
+        'R': ("111", "101", "111", "110", "101"),
+        'S': ("111", "100", "111", "001", "111"),
+        'T': ("111", "010", "010", "010", "010"),
+        'U': ("101", "101", "101", "101", "111"),
+        'V': ("101", "101", "101", "101", "010"),
+        'W': ("101", "101", "101", "111", "101"),
+        'X': ("101", "101", "010", "101", "101"),
+        'Y': ("101", "101", "010", "010", "010"),
+        'Z': ("111", "001", "010", "100", "111"),
+        ':': ("000", "010", "000", "010", "000"),
+        '.': ("000", "000", "000", "000", "010"),
+        ',': ("000", "000", "000", "010", "100"),
+        '-': ("000", "000", "111", "000", "000"),
+        '+': ("000", "010", "111", "010", "000"),
+        '/': ("001", "001", "010", "100", "100"),
+        '|': ("010", "010", "010", "010", "010"),
+        '(': ("010", "100", "100", "100", "010"),
+        ')': ("010", "001", "001", "001", "010"),
+        '%': ("101", "001", "010", "100", "101"),
+        '<': ("001", "010", "100", "010", "001"),
+        '>': ("100", "010", "001", "010", "100"),
+        '=': ("000", "111", "000", "111", "000"),
+        '&': ("010", "101", "010", "101", "011"),
+        '^': ("010", "101", "000", "000", "000"),
+        '_': ("000", "000", "000", "000", "111"),
+        '!': ("010", "010", "010", "000", "010")
+    }
+
+    def __init__(self, size: int):
+        self.scale = max(1, size // 6)
+        self.cache: Dict[Tuple[str, Tuple[int, int, int]], pygame.Surface] = {}
+
+    def render(self, text: str, color: Tuple[int, int, int]) -> pygame.Surface:
+        normalized = text.upper()
+        key = (normalized, color)
+        cached = self.cache.get(key)
+        if cached is not None:
+            return cached
+
+        glyph_width = 3 * self.scale
+        glyph_height = 5 * self.scale
+        spacing = self.scale
+        total_width = max(1, len(normalized) * (glyph_width + spacing) - spacing)
+        surface = pygame.Surface((total_width, glyph_height), pygame.SRCALPHA)
+
+        for index, char in enumerate(normalized):
+            glyph = self.GLYPHS.get(char, self.GLYPHS['?'])
+            x_origin = index * (glyph_width + spacing)
+            for row_index, row in enumerate(glyph):
+                for col_index, value in enumerate(row):
+                    if value == '1':
+                        pixel_rect = (
+                            x_origin + col_index * self.scale,
+                            row_index * self.scale,
+                            self.scale,
+                            self.scale
+                        )
+                        surface.fill(color, pixel_rect)
+
+        if len(self.cache) > 1024:
+            self.cache.clear()
+        self.cache[key] = surface
+        return surface
+
+
+def load_default_font(size: int) -> UIFont:
+    """Try freetype first, then pygame.font."""
+    # Prefer pygame.freetype because it works even on some builds where pygame.font fails.
+    try:
+        import pygame.freetype as pygame_freetype
+        if not pygame_freetype.get_init():
+            pygame_freetype.init()
+        return UIFont('pygame_freetype', pygame_freetype.Font(None, size), size)
+    except Exception:
+        pass
+
+    try:
+        import pygame.ftfont as pygame_ftfont
+        if not pygame_ftfont.get_init():
+            pygame_ftfont.init()
+        return UIFont('pygame_font', pygame_ftfont.Font(None, size), size)
+    except Exception:
+        pass
+
     try:
         import pygame.font as pygame_font
         if not pygame_font.get_init():
             pygame_font.init()
-        return pygame_font.Font(None, size)
+        return UIFont('pygame_font', pygame_font.Font(None, size), size)
     except Exception:
-        return None
+        pass
+
+    return UIFont('bitmap', BitmapFont(size), size)
 
 
 @dataclass
@@ -263,12 +397,17 @@ class PrimeChemistry:
         self.last_step_extraction = 0.0
         self.extraction_multiplier = 1.0
         self.profile_name = 'normal'
+        self.step_count = 0
+        self.population_history = deque(maxlen=360)
+        self.extraction_history = deque(maxlen=360)
 
         # Initialize random molecules
         for _ in range(molecule_count):
             pos = [random.uniform(-size / 2, size / 2) for _ in range(3)]
             number = random.randint(2, 100)
             self.molecules.append(PrimeMolecule(number, pos))
+        self.population_history.append(len(self.molecules))
+        self.extraction_history.append(0.0)
 
     def set_growth_profile(self, profile_name: str, profile_settings: Dict[str, float]):
         self.profile_name = profile_name
@@ -338,6 +477,9 @@ class PrimeChemistry:
         self.molecules = [mol for i, mol in enumerate(self.molecules)
                          if i not in removed_molecules] + new_molecules
         self.last_step_extraction = step_extracted
+        self.step_count += 1
+        self.population_history.append(len(self.molecules))
+        self.extraction_history.append(step_extracted)
         self.regenerate_territory(time_scale)
 
     def world_to_territory_index(self, position: np.ndarray) -> Tuple[int, int]:
@@ -384,6 +526,44 @@ class PrimeChemistry:
 
         wealth_values = np.array([molecule.wealth for molecule in self.molecules])
         return float(np.min(wealth_values)), float(np.mean(wealth_values)), float(np.max(wealth_values))
+
+    def average_speed(self) -> float:
+        if not self.molecules:
+            return 0.0
+        return float(np.mean([np.linalg.norm(molecule.velocity) for molecule in self.molecules]))
+
+    def population_change(self, window_steps: int = 120) -> int:
+        if len(self.population_history) < 2:
+            return 0
+        window = min(window_steps, len(self.population_history) - 1)
+        return int(self.population_history[-1] - self.population_history[-1 - window])
+
+    def growth_per_step(self, window_steps: int = 120) -> float:
+        if len(self.population_history) < 2:
+            return 0.0
+        window = min(window_steps, len(self.population_history) - 1)
+        if window <= 0:
+            return 0.0
+        return (self.population_history[-1] - self.population_history[-1 - window]) / window
+
+    def extraction_per_step(self, window_steps: int = 120) -> float:
+        if not self.extraction_history:
+            return 0.0
+        window = min(window_steps, len(self.extraction_history))
+        return float(np.mean(list(self.extraction_history)[-window:]))
+
+    def resource_depletion_ratio(self) -> float:
+        depleted_mask = self.territory < (0.2 * self.territory_capacity)
+        return float(np.mean(depleted_mask))
+
+    def wealth_inequality(self) -> float:
+        if not self.molecules:
+            return 0.0
+        wealth_values = np.array([molecule.wealth for molecule in self.molecules], dtype=float)
+        mean_value = float(np.mean(wealth_values))
+        if mean_value <= 1e-8:
+            return 0.0
+        return float(np.std(wealth_values) / mean_value)
 
     def apply_rules(self, mol1: PrimeMolecule, mol2: PrimeMolecule) -> Tuple[np.ndarray, np.ndarray]:
         """Apply all relevant interaction rules between two molecules"""
@@ -600,7 +780,7 @@ class Visualizer:
         glMatrixMode(GL_MODELVIEW)
         glPopMatrix()
 
-    def draw(self, simulation: PrimeChemistry):
+    def draw(self, simulation: PrimeChemistry, runtime_info: Optional[Dict[str, float]] = None):
         """Updated draw method to include molecule info"""
         # Store simulation reference
         self.simulation = simulation
@@ -634,7 +814,7 @@ class Visualizer:
 
         # Draw UI overlays
         if self.show_info:
-            self.draw_simulation_info(simulation)
+            self.draw_simulation_info(simulation, runtime_info)
 
         # Draw selected molecule info
         if self.selected_molecule:
@@ -749,7 +929,7 @@ class Visualizer:
         glVertex3f(0, 0, 5)
         glEnd()
 
-    def draw_simulation_info(self, simulation: PrimeChemistry):
+    def draw_simulation_info(self, simulation: PrimeChemistry, runtime_info: Optional[Dict[str, float]] = None):
         """Draw simulation statistics and info"""
         glMatrixMode(GL_PROJECTION)
         glPushMatrix()
@@ -759,9 +939,14 @@ class Visualizer:
         glPushMatrix()
         glLoadIdentity()
 
+        fps_value = 0.0 if runtime_info is None else float(runtime_info.get('fps', 0.0))
+        pop_delta = simulation.population_change(120)
+        pop_delta_sign = "+" if pop_delta >= 0 else ""
+
         info_text = [
-            f"Molecules: {len(simulation.molecules)}",
+            f"Population: {len(simulation.molecules)} ({pop_delta_sign}{pop_delta} /120 steps)",
             f"Temperature: {simulation.temperature:.2f}",
+            f"FPS: {fps_value:.1f}",
             f"{'PAUSED' if self.paused else 'RUNNING'}",
             f"{'AUTO' if self.auto_step else 'MANUAL'}"
         ]
@@ -1071,21 +1256,48 @@ class TerritoryVisualizer:
         high_text = self.font.render("High wealth", True, (220, 220, 220))
         self.display.blit(high_text, (legend_rect.right - high_text.get_width(), legend_rect.bottom + 6))
 
-    def draw_sidebar(self, simulation: PrimeChemistry):
+    def draw_sidebar(self, simulation: PrimeChemistry, runtime_info: Optional[Dict[str, float]] = None):
         pygame.draw.rect(self.display, (24, 24, 32), self.sidebar_rect)
         pygame.draw.rect(self.display, (72, 72, 88), self.sidebar_rect, 2)
 
+        runtime_info = runtime_info or {}
+        fps_value = float(runtime_info.get('fps', 0.0))
+        status_text = 'PAUSED' if self.paused else 'RUNNING'
+        stepping_text = 'AUTO' if self.auto_step else 'MANUAL'
+        window_steps = min(120, max(1, simulation.step_count))
+        pop_delta = simulation.population_change(window_steps)
+        pop_delta_sign = "+" if pop_delta >= 0 else ""
         min_wealth, avg_wealth, max_wealth = simulation.wealth_stats()
+        wealth_cv = simulation.wealth_inequality()
+        growth_per_step = simulation.growth_per_step(window_steps)
+        avg_extraction = simulation.extraction_per_step(window_steps)
+        avg_speed = simulation.average_speed()
+        depleted_ratio = simulation.resource_depletion_ratio()
+        hotspot_heat = float(np.max(simulation.extraction_heat))
+        richness = float(np.mean(simulation.territory))
+
         lines = [
-            "Territory Economy View",
-            f"Growth profile: {self.profile_name.upper()}",
-            f"Population: {len(simulation.molecules)}",
+            "Territory Economy Dashboard",
+            f"Status: {status_text} | Step mode: {stepping_text} | FPS: {fps_value:.1f}",
+            f"Profile: {self.profile_name.upper()} | Steps: {simulation.step_count}",
+            "",
+            "Population & Motion",
+            f"Population: {len(simulation.molecules)} ({pop_delta_sign}{pop_delta} over {window_steps} steps)",
+            f"Growth velocity: {growth_per_step:+.3f} molecules/step",
+            f"Average speed: {avg_speed:.3f} units/step",
             f"Temperature: {simulation.temperature:.2f}",
-            f"Avg wealth: {avg_wealth:.2f}",
-            f"Wealth range: {min_wealth:.2f} -> {max_wealth:.2f}",
-            f"Extracted this step: {simulation.last_step_extraction:.4f}",
+            "",
+            "Economy & Extraction",
+            f"Avg wealth: {avg_wealth:.2f} | Range: {min_wealth:.2f} -> {max_wealth:.2f}",
+            f"Wealth inequality (CV): {wealth_cv:.3f}",
+            f"Extraction current step: {simulation.last_step_extraction:.4f}",
+            f"Extraction avg ({window_steps}): {avg_extraction:.4f}",
             f"Total extracted: {simulation.total_extracted:.2f}",
-            f"Resource richness: {float(np.mean(simulation.territory)):.3f}",
+            "",
+            "Territory Health",
+            f"Richness mean: {richness:.3f}",
+            f"Depleted area (<20%): {depleted_ratio * 100:.1f}%",
+            f"Hotspot intensity: {hotspot_heat:.3f}",
             "",
             "Controls:",
             "SPACE pause/resume",
@@ -1107,7 +1319,7 @@ class TerritoryVisualizer:
 
         self.draw_wealth_legend(max_wealth)
 
-    def draw(self, simulation: PrimeChemistry):
+    def draw(self, simulation: PrimeChemistry, runtime_info: Optional[Dict[str, float]] = None):
         self.display.fill((12, 14, 20))
 
         terrain_surface = self.build_territory_surface(simulation)
@@ -1136,7 +1348,7 @@ class TerritoryVisualizer:
             pygame.draw.circle(self.display, (16, 16, 20), (x_pos, y_pos), radius, 1)
 
         if self.show_info:
-            self.draw_sidebar(simulation)
+            self.draw_sidebar(simulation, runtime_info)
 
         pygame.display.flip()
 
@@ -1186,7 +1398,10 @@ def main(fps=60, growth_profile='normal', view_mode='territory'):
         elif event_result == 'step':
             simulation.step()
 
-        visualizer.draw(simulation)
+        runtime_info = {
+            'fps': clock.get_fps()
+        }
+        visualizer.draw(simulation, runtime_info)
         clock.tick(fps)
 
     pygame.quit()
