@@ -27,6 +27,15 @@ class UIFont:
             return self.font.render(text, color)
         return self.font.render(text, antialias, color)
 
+    def line_height(self) -> int:
+        if self.backend == 'pygame_freetype':
+            return max(1, int(self.font.get_sized_height()))
+        if self.backend == 'bitmap':
+            return self.font.line_height()
+        if hasattr(self.font, 'get_linesize'):
+            return int(self.font.get_linesize())
+        return max(1, int(self.size))
+
 
 class BitmapFont:
     """Minimal built-in bitmap font fallback for environments without pygame font modules."""
@@ -92,6 +101,9 @@ class BitmapFont:
     def __init__(self, size: int):
         self.scale = max(1, size // 6)
         self.cache: Dict[Tuple[str, Tuple[int, int, int]], pygame.Surface] = {}
+
+    def line_height(self) -> int:
+        return 5 * self.scale
 
     def render(self, text: str, color: Tuple[int, int, int]) -> pygame.Surface:
         normalized = text.upper()
@@ -1159,15 +1171,22 @@ class TerritoryVisualizer:
         self.show_info = True
         self.profile_name = 'normal'
 
-        self.font = load_default_font(24)
-        self.title_font = load_default_font(34)
-        if self.font is None or self.title_font is None:
-            print("Warning: pygame font module unavailable. Territory text overlays are disabled.")
+        self.font = load_default_font(18)
+        self.title_font = load_default_font(26)
+
+        # Bitmap fallback needs smaller nominal sizes to avoid dense overlap in side panels.
+        if self.font.backend == 'bitmap':
+            self.font = load_default_font(14)
+        if self.title_font.backend == 'bitmap':
+            self.title_font = load_default_font(20)
 
         territory_px = min(height - 40, width - 360)
         self.territory_rect = pygame.Rect(20, 20, territory_px, territory_px)
         self.sidebar_rect = pygame.Rect(self.territory_rect.right + 20, 20,
                                         width - self.territory_rect.right - 40, height - 40)
+
+        self.body_line_step = self.font.line_height() + 4
+        self.title_line_step = self.title_font.line_height() + 6
 
     def set_profile(self, profile_name: str):
         self.profile_name = profile_name
@@ -1235,9 +1254,12 @@ class TerritoryVisualizer:
         terrain_surface = pygame.surfarray.make_surface(np.transpose(terrain_rgb, (1, 0, 2)))
         return pygame.transform.smoothscale(terrain_surface, self.territory_rect.size)
 
+    def legend_rect(self) -> pygame.Rect:
+        return pygame.Rect(self.sidebar_rect.left + 20, self.sidebar_rect.bottom - 80,
+                           self.sidebar_rect.width - 40, 18)
+
     def draw_wealth_legend(self, max_wealth: float):
-        legend_rect = pygame.Rect(self.sidebar_rect.left + 20, self.sidebar_rect.bottom - 80,
-                                  self.sidebar_rect.width - 40, 18)
+        legend_rect = self.legend_rect()
         for offset in range(legend_rect.width):
             ratio = offset / max(1, legend_rect.width - 1)
             color = self.wealth_to_color(ratio * max(max_wealth, 1.0), max(max_wealth, 1.0))
@@ -1309,13 +1331,25 @@ class TerritoryVisualizer:
 
         if self.font is not None and self.title_font is not None:
             y_pos = self.sidebar_rect.top + 16
+            max_text_bottom = self.legend_rect().top - 12
+            previous_clip = self.display.get_clip()
+            self.display.set_clip(self.sidebar_rect.inflate(-12, -12))
             for index, line in enumerate(lines):
                 if index == 0:
                     label = self.title_font.render(line, True, (245, 245, 250))
+                    step_height = self.title_line_step
                 else:
                     label = self.font.render(line, True, (215, 215, 225))
+                    step_height = self.body_line_step
+
+                if y_pos + step_height > max_text_bottom:
+                    overflow_label = self.font.render("...", True, (215, 215, 225))
+                    self.display.blit(overflow_label, (self.sidebar_rect.left + 16, y_pos))
+                    break
+
                 self.display.blit(label, (self.sidebar_rect.left + 16, y_pos))
-                y_pos += 22 if index == 0 else 20
+                y_pos += step_height
+            self.display.set_clip(previous_clip)
 
         self.draw_wealth_legend(max_wealth)
 
