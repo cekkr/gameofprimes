@@ -195,21 +195,21 @@ class ReactionRule:
 
 GROWTH_PROFILES: Dict[str, Dict[str, float]] = {
     'slow': {
-        'time_scale': 0.007,
-        'reaction_multiplier': 0.65,
-        'damping': 0.965,
+        'time_scale': 0.012,
+        'reaction_multiplier': 0.80,
+        'damping': 0.992,
         'extraction_multiplier': 0.75
     },
     'normal': {
-        'time_scale': 0.01,
-        'reaction_multiplier': 1.0,
-        'damping': 0.95,
+        'time_scale': 0.020,
+        'reaction_multiplier': 1.10,
+        'damping': 0.988,
         'extraction_multiplier': 1.0
     },
     'fast': {
-        'time_scale': 0.018,
-        'reaction_multiplier': 1.45,
-        'damping': 0.93,
+        'time_scale': 0.032,
+        'reaction_multiplier': 1.55,
+        'damping': 0.982,
         'extraction_multiplier': 1.35
     }
 }
@@ -344,7 +344,8 @@ class PrimeMolecule:
     def __init__(self, number: int, position: np.ndarray):
         self.number = number
         self.position = np.array(position, dtype=float)
-        self.velocity = np.zeros(3)
+        # Non-zero initial motion prevents dead starts and helps early encounters.
+        self.velocity = np.random.normal(0.0, 0.9, 3)
         self.acceleration = np.zeros(3)
         self.prime_factors = self.factorize(number)
         self.mass = math.log2(number) * 2
@@ -721,7 +722,7 @@ class PrimeChemistry:
         step_extracted = 0.0
 
         # Thermal noise follows sqrt(dt) scaling for stable small timesteps.
-        thermal_sigma = 0.01 * self.temperature * math.sqrt(time_scale)
+        thermal_sigma = 0.12 * self.temperature * math.sqrt(time_scale)
         for molecule in self.molecules:
             molecule.velocity += np.random.normal(0, thermal_sigma, 3)
 
@@ -1546,7 +1547,7 @@ def create_custom_rules() -> SimulationRules:
     rules.set_constant('resource_mobility', 0.85)
     rules.set_constant('proximity_repulsion_distance', 1.3)
     rules.set_constant('proximity_repulsion_strength', 0.6)
-    rules.set_constant('reaction_distance', 3.2)
+    rules.set_constant('reaction_distance', 6.5)
 
     return rules
 
