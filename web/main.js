@@ -12,7 +12,11 @@ let currentHighlight = null;
 const simulationData = {
   molecules: [],
   temperature: 0,
-  reactionCount: 0
+  reactionCount: 0,
+  avgSpeed: 0,
+  avgMass: 0,
+  avgCharge: 0,
+  avgComplexity: 0
 };
 
 // UI state
@@ -56,7 +60,7 @@ function init() {
   setupSceneHelpers(spaceDimension);
 
   // Initialize simulation
-  initializeSimulation(spaceDimension, 2, 10000, 0.2);
+  initializeSimulation(spaceDimension, 2, 10000, 1.0);
 
   // Make the simulation state globally accessible
   makeGloballyAccessible();
@@ -143,7 +147,7 @@ function initializeSimulation(size, moleculeCount = 5, maxNumber = 200, timeScal
 
   try {
     // Create worker
-    simulationWorker = new Worker(new URL('./simulation-worker-gpu.js', import.meta.url), {
+    simulationWorker = new Worker(new URL('./simulation-worker-prime.js', import.meta.url), {
       type: 'module'
     });
     
@@ -198,7 +202,6 @@ function handleWorkerMessage(event) {
   
   switch (data.type) {
     case 'update':
-        console.log("main.js mols update:", data);
         handleUpdateMessage(data);
         break;
       
@@ -250,6 +253,11 @@ function handleUpdateMessage(data) {
     
     // Update simulation data
     simulationData.molecules = updatedMolecules;
+    const stats = computeMoleculeStats(updatedMolecules);
+    simulationData.avgSpeed = stats.avgSpeed;
+    simulationData.avgMass = stats.avgMass;
+    simulationData.avgCharge = stats.avgCharge;
+    simulationData.avgComplexity = stats.avgComplexity;
     
     // Update molecule meshes
     updateMoleculeMeshes();
@@ -274,6 +282,43 @@ function calculateMoleculeSize(molData) {
   
   // Final size
   return baseSize + numberFactor + complexityFactor + exponentFactor;
+}
+
+/**
+ * Compute aggregate statistics for overlay.
+ */
+function computeMoleculeStats(molecules) {
+  if (!molecules || molecules.length === 0) {
+    return {
+      avgSpeed: 0,
+      avgMass: 0,
+      avgCharge: 0,
+      avgComplexity: 0
+    };
+  }
+
+  let speedSum = 0;
+  let massSum = 0;
+  let chargeSum = 0;
+  let complexitySum = 0;
+
+  molecules.forEach(mol => {
+    const velocity = mol.velocity || [0, 0, 0];
+    speedSum += Math.hypot(velocity[0] || 0, velocity[1] || 0, velocity[2] || 0);
+    massSum += Number(mol.mass || 0);
+    chargeSum += Math.abs(Number(mol.charge || 0));
+
+    const factors = mol.prime_factors || {};
+    complexitySum += Object.values(factors).reduce((sum, exponent) => sum + Number(exponent || 0), 0);
+  });
+
+  const count = molecules.length;
+  return {
+    avgSpeed: speedSum / count,
+    avgMass: massSum / count,
+    avgCharge: chargeSum / count,
+    avgComplexity: complexitySum / count
+  };
 }
 
 /**
@@ -508,6 +553,10 @@ function updateInfoDisplay() {
       <p>Molecules: <strong>${simulationData.molecules.length}</strong></p>
       <p>Temperature: <strong>${simulationData.temperature.toFixed(2)}</strong></p>
       <p>Reactions: <strong>${simulationData.reactionCount || 0}</strong></p>
+      <p>Avg speed: <strong>${simulationData.avgSpeed.toFixed(2)}</strong></p>
+      <p>Avg mass: <strong>${simulationData.avgMass.toFixed(2)}</strong></p>
+      <p>Avg |charge|: <strong>${simulationData.avgCharge.toFixed(2)}</strong></p>
+      <p>Avg complexity: <strong>${simulationData.avgComplexity.toFixed(2)}</strong></p>
       <p>Status: <strong>${paused ? 'PAUSED' : 'RUNNING'}</strong></p>
     </div>
 
@@ -796,8 +845,8 @@ function createControlPanel() {
     <div class="control-group">
       <label class="control-label" for="timeScaleSlider">Simulation Speed</label>
       <div class="slider-container">
-        <input type="range" min="0.2" max="10.0" step="0.1" value="0.1" class="control-slider" id="timeScaleSlider">
-        <span class="slider-value" id="timeScaleValue">0.1</span>
+        <input type="range" min="0.2" max="10.0" step="0.1" value="1.0" class="control-slider" id="timeScaleSlider">
+        <span class="slider-value" id="timeScaleValue">1.0</span>
       </div>
     </div>
     
@@ -1317,12 +1366,10 @@ function toggleVectorDisplay() {
  * Reset simulation
  */
 function resetSimulation() {
-  const spaceDimension = 10;
-  const timeSlider = document.getElementById('timeScaleSlider');
-  const moleculeCount = timeSlider ? parseInt(timeSlider.value) * 5 : 5;
+  const spaceDimension = 100;
   const currentTimeScale = window.currentTimeScale || 1.0;
   
-  initializeSimulation(spaceDimension, moleculeCount, 150, currentTimeScale);
+  initializeSimulation(spaceDimension, 2, 10000, currentTimeScale);
 }
 
 /**
@@ -1379,6 +1426,7 @@ function updateTimeScaleUI(value) {
   if (timeSlider && timeValue) {
     timeSlider.value = value;
     timeValue.textContent = value.toFixed(1);
+    window.currentTimeScale = Number(value);
   }
 }
 

@@ -17,6 +17,7 @@ Prime-factor chemistry simulation with two visual modes:
 - Dynamic growth zones that move, relocate, and change count over time.
 - Per-agent extracted-energy tracking with real-time color gradient.
 - Tunable growth profiles: `slow`, `normal`, `fast`.
+- Web simulation (`web/`) now uses the same prime-index + fractal + inertial chemistry model with a spatial-hash worker for smoother real-time interactions.
 
 ## Requirements
 
@@ -61,6 +62,32 @@ Run denser or wider worlds:
 python3 main.py --size 120 --molecules 200
 python3 main.py --size 180 --molecules 500
 ```
+
+## Web Version
+
+Serve the `web/` directory with a local HTTP server (recommended, due to ES modules + worker loading):
+
+```bash
+cd web
+python3 -m http.server 8000
+```
+
+Then open:
+
+- [http://localhost:8000](http://localhost:8000)
+
+### Web Notes
+
+- Default worker: `web/simulation-worker-prime.js`
+- Core dynamics:
+  - mass from prime indexes (`Σ index(prime) * exponent`)
+  - recursive fractal signatures and parity coupling
+  - persistent inertial force + fluid drag
+  - short-range repulsion + stochastic reactions
+- UI controls:
+  - temperature slider
+  - simulation speed slider (`time_scale`)
+  - add molecules, pause/resume, vector toggle
 
 ## Controls
 
