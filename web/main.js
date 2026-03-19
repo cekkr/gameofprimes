@@ -34,7 +34,7 @@ let infoDiv, moleculeInfoDiv;
  * Main initialization function
  */
 function init() {
-  const spaceDimension = 100;
+  const spaceDimension = 500;
   
   // Scene setup
   scene = new THREE.Scene();
